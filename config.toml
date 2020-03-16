@@ -1,5 +1,5 @@
 #Uncomment as needed
-baseurl = "https://jmorag.github.io/"
+baseurl = "https://jmorag.netlify.com/"
 languageCode = "en-us"
 Title = "Joseph Morag"
 # Copyright notice. This is displayer in the footer.
