@@ -4,7 +4,3 @@
 [submodule "themes/blank"]
 	path = themes/blank
 	url = https://github.com/vimux/blank
-[submodule "public"]
-	path = public
-	url = https://github.com/jmorag/jmorag.github.io.git
-	branch = master
