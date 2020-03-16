@@ -13,23 +13,17 @@
 :PROPERTIES:
 :EXPORT_HUGO_SECTION: /
 :EXPORT_FILE_NAME: about
+:EXPORT_DATE: 2020-03-14 
+:END:
+
+I'm a Haskell and Emacs enthusiast with a very small mechanical keyboard hobby. Currently, I'm studying Music Technology at NYU with [[https:www.bmcfee.github.io][Brian McFee]] and work at [[https://getlantern.org/en_US/index.html][Lantern]]. In my other life, I'm a violinist and conductor, but you can find out all about that on my [[https://www.josephmorag.com/][other website]]. 
+
+* Combating the Corona slump :meta:
+:PROPERTIES:
+:EXPORT_FILE_NAME: corona
 :EXPORT_DATE: 2020-03-15 
 :END:
 
-I'm Joseph Morag!
+The world is in shambles, with Italy on total lockdown and New York City surely to follow suit in the next few days. With the prospect of working from home for the foreseeable future on the horizon, what better time to hunker down and finally start that blog that I've been putting off writing for forever!?
 
-* My first post                                                    :category:
-  :PROPERTIES:
-  :EXPORT_FILE_NAME: first
-  :EXPORT_DATE: 2020-03-15 
-  :END:
-Hi Babe <3 love you!
 
-* Second Post                                                    :shmategory:
-  :PROPERTIES:
-  :EXPORT_FILE_NAME: second
-  :EXPORT_DATE: 2020-03-15 19:35
-  :END:
-<333
-#+hugo: more
-333333333333333333333333333

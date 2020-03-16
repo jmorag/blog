@@ -1,7 +1,7 @@
 #Uncomment as needed
 baseurl = "https://jmorag.github.io/"
 languageCode = "en-us"
-Title = "Your site title"
+Title = "Joseph Morag"
 # Copyright notice. This is displayer in the footer.
 copyright = "&copy; Joseph Morag, 2020"
 theme = "potato-dark"
