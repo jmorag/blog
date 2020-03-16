@@ -1,0 +1,35 @@
+#+AUTHOR: Joseph Morag
+
+#+HUGO_BASE_DIR: ./
+
+#+SEQ_TODO: TODO DRAFT DONE
+#+SEQ_TODO: TEST__TODO | TEST__DONE
+
+#+PROPERTY: header-args :eval never-export
+
+#+STARTUP: indent
+
+* About
+:PROPERTIES:
+:EXPORT_HUGO_SECTION: /
+:EXPORT_FILE_NAME: about
+:EXPORT_DATE: 2020-03-15 
+:END:
+
+I'm Joseph Morag!
+
+* My first post                                                    :category:
+  :PROPERTIES:
+  :EXPORT_FILE_NAME: first
+  :EXPORT_DATE: 2020-03-15 
+  :END:
+Hi Babe <3 love you!
+
+* Second Post                                                    :shmategory:
+  :PROPERTIES:
+  :EXPORT_FILE_NAME: second
+  :EXPORT_DATE: 2020-03-15 19:35
+  :END:
+<333
+#+hugo: more
+333333333333333333333333333
