@@ -72,7 +72,8 @@ Deleting the current node is almost identical to visiting the parent, except tha
 
 #+begin_src haskell
   delete :: Zipper -> Zipper
-  delete (_, Crumb parent left right : cs) = (Node parent (left ++ right), cs)
+  delete (_, Crumb parent left right : cs) =
+    (Node parent (left ++ right), cs)
 #+end_src
 
 To visit the right sibling we deconstruct the most recent crumb's list of right siblings, set its head to the new focus, and add the current focus to the end of the list of left siblings.
@@ -106,7 +107,8 @@ Inserting a new node to the left or right of the current node is as simple as co
 Inserting a new child is stipulated to always happen at the leftmost position and only requires modification of the current focus.
 #+begin_src haskell
   insertChild :: Int -> Zipper -> Zipper
-  insertChild x (Node y children, crumbs) = (Node y (Node x [] : children), crumbs)
+  insertChild x (Node y children, crumbs) =
+    (Node y (Node x [] : children), crumbs)
 #+end_src
 
 The final operation, changing the value of the current focus, is the easiest, needing no explanation.
