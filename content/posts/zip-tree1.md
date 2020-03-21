@@ -1,0 +1,142 @@
++++
+title = "Zipping Trees, Part 1"
+author = ["Joseph Morag"]
+date = 2020-03-20
+tags = ["haskell"]
+draft = false
++++
+
+While trawling hackerrank in order to procrastinate doing "real" work, I came across [this](https://www.hackerrank.com/challenges/tree-manager/problem) problem in the Functional Programming section. It has you perform various incremental operations on a rose tree, such as inserting and deleting nodes and visiting adjacent nodes in the tree. In the spirit of sticking with [Simple Haskell](https://www.simplehaskell.org/), our first attempt at the problem will use only one benign language extension and two imports.
+
+```haskell
+{-# LANGUAGE LambdaCase #-}
+import Control.Monad
+import Data.Tree
+```
+
+Maintaining a focus into a recursive data structure can be elegantly solved by zippers. We can adapt the content from [this excellent introduction to zippers in Learn You a Haskell](http://learnyouahaskell.com/zippers) directly to suit the problem at hand. Using the `Tree` type from [containers](https://hackage.haskell.org/package/containers-0.6.2.1/docs/Data-Tree.html) (essentially `data Tree a = Node a [Tree a]`) we can define a corresponding "Crumb" and Zipper type.
+
+```haskell
+data Crumb
+  = Crumb
+      Int -- parent node's value
+      [Tree Int] -- left siblings
+      [Tree Int] -- right siblings
+  deriving (Show)
+type Zipper = (Tree Int, [Crumb])
+```
+
+We could define them polymorphically, but the problem only uses =Int=s.
+
+The first operation is to visit the $n$th child of the current node. We accomplish this by splitting the current focus's children at the $n-1$th position&nbsp;[^fn:1], making the $n-1$th element our new focus, and appending a new crumb with its left and right siblings and parent value to the list of preceding crumbs.
+
+```haskell
+visitChild :: Int -> Zipper -> Zipper
+visitChild n (Node x children, crumbs) =
+  let (left, (focus : right)) = splitAt (n - 1) children
+  in  (focus, Crumb x left right : crumbs)
+```
+
+Visiting the parent requires us to join the most recent crumb's left and right siblings with the current focus to construct a new focus.
+
+```haskell
+visitParent :: Zipper -> Zipper
+visitParent (focus, Crumb parent left right : cs) =
+  (Node parent (left ++ [focus] ++ right), cs)
+```
+
+Deleting the current node is almost identical to visiting the parent, except that we drop the focus instead of sandwiching it in between the left and right siblings.
+
+```haskell
+delete :: Zipper -> Zipper
+delete (_, Crumb parent left right : cs) = (Node parent (left ++ right), cs)
+```
+
+To visit the right sibling we deconstruct the most recent crumb's list of right siblings, set its head to the new focus, and add the current focus to the end of the list of left siblings.
+
+```haskell
+visitRight :: Zipper -> Zipper
+visitRight (focus, Crumb parent left (r : rs) : cs) =
+  (r, Crumb parent (left ++ [focus]) rs : cs)
+```
+
+Visiting the left sibling is very similar, but due to the asymmetrical nature of lists, we can't use the same elegant pattern matching we used for the right case.
+
+```haskell
+visitLeft :: Zipper -> Zipper
+visitLeft (focus, Crumb parent left right : cs) =
+  (last left, Crumb parent (init left) (focus : right) : cs)
+```
+
+Inserting a new node to the left or right of the current node is as simple as constructing a new tree with no children and adding it to the appropriate place in the current crumb.
+
+```haskell
+insertLeft :: Int -> Zipper -> Zipper
+insertLeft x (focus, Crumb parent left right : cs) =
+  (focus, Crumb parent (left ++ [Node x []]) right : cs)
+
+insertRight :: Int -> Zipper -> Zipper
+insertRight x (focus, Crumb parent left right : cs) =
+  (focus, Crumb parent left (Node x [] : right) : cs)
+```
+
+Inserting a new child is stipulated to always happen at the leftmost position and only requires modification of the current focus.
+
+```haskell
+insertChild :: Int -> Zipper -> Zipper
+insertChild x (Node y children, crumbs) = (Node y (Node x [] : children), crumbs)
+```
+
+The final operation, changing the value of the current focus, is the easiest, needing no explanation.
+
+```haskell
+change :: Int -> Zipper -> Zipper
+change x (Node _ forest, crumbs) = (Node x forest, crumbs)
+```
+
+With our logic written, we can write the main loop to read in the instructions and print the value of the current focus when we are told to do so. The input format, as is common in hackerrank problems, is an integer, \\(q\\), on one line, denoting the number of instructions, followed by \\(q\\) lines, each containing one instruction of the form "change 2", "print", "visit child 3", "insert left", etc. Although we could just throw away the first line and read in the rest of the contents line by line, it feels wasteful not to use information.
+
+```haskell
+main :: IO ()
+main = do
+  q            <- readLn
+  instructions <- replicateM q (words <$> getLine)
+  foldM_ go (Node 0 [], []) instructions
+```
+
+The `foldM` function from `Control.Monad` takes a function of type `Monad m => (a -> b -> m a)`, an initial value of type `a`, a collection of type `Foldable t => t b`, and returns the final accumulation `m a`. `foldM_` is identical to `foldM` except that it throws away the final result, returning `m ()`, which is what we want since we just care about printing to `STDOUT`. Specializing the polymorphic type to our particular case, we have `foldM_ :: (Zipper -> [String] -> IO Zipper) -> Zipper -> [[String]] -> IO ()`. The `go` function takes care of the actual logic of parsing each instruction and dispatching to the correct zipper function.
+
+```haskell
+go :: Zipper -> [String] -> IO Zipper
+go zipper = \case
+  ["change", x] -> pure $ change (read x) zipper
+  ["print"]     -> case zipper of
+    (Node x _, _) -> zipper <$ print x
+  ["visit", dir] ->
+    let f = case dir of
+          "left"   -> visitLeft
+          "right"  -> visitRight
+          "parent" -> visitParent
+          _        -> error $ "Invalid direction: " <> dir
+    in  pure (f zipper)
+  ["visit", "child", n] -> pure (visitChild (read n) zipper)
+  ["insert", dir, x] ->
+    let f = case dir of
+          "left"  -> insertLeft
+          "right" -> insertRight
+          "child" -> insertChild
+          _       -> error $ "Invalid direction: " <> dir
+    in  pure (f (read x) zipper)
+  ["delete"] -> pure (delete zipper)
+  other      -> error ("Invalid instruction: " <> unwords other)
+```
+
+This solution is correct and runs quickly enough to satisfy hackerrank's time constraints. It uses only Simple Haskell: a benign language extension, pattern matching, and basic algebraic datatypes. There are, however, some things it leaves to be desired.
+
+1.  Using unnamed tuples and product types with no record syntax can obscure the meaning of each field and requires some extra typing in each function for elements of the zipper that remain unchanged during a particular transformation.
+2.  The `Tree` type from containers uses lists, which is useful for infinite trees. However, our trees are guaranteed to be finite. Moreover, we have to append to the end of a list or drop its last element when visiting or inserting nodes, which takes linear time in the size of the list. We are told that any given node will have at most 10 children, so this isn't a huge issue, but it would be a serious performance problem with a larger branching factor.
+3.  All of the `visit` functions are partial and will crash if there is an invalid operation in the instruction list, such as visiting the child of a leaf node or the parent of the tree root. Hackerrank guarantees that all operations will be valid, so crashing on what should be unreachable cases is reasonable. We could return `Maybe Zipper` from all of our functions, but that would be more cumbersome to deal with. Perhaps the best solution would be to explicitly call `error` with an informative message rather than getting something about "irrefutable patterns."
+
+In part 2, we will see how going slightly up the Haskell complexity chain can solve these problems, as well as adding a whole slew of new ones!
+
+[^fn:1]: the hackerrank problem counts children from 1 but Haskell lists are 0-indexed, because the Haskell language designers aren't monsters
