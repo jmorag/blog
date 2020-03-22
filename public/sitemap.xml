@@ -1,1 +1,49 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url><loc>https://jmorag.netlify.com/about/</loc><lastmod>2020-03-16T12:21:19-04:00</lastmod></url><url><loc>https://jmorag.netlify.com/posts/corona/</loc><lastmod>2020-03-15T00:00:00-04:00</lastmod></url><url><loc>https://jmorag.netlify.com/</loc><lastmod>2020-03-16T12:21:19-04:00</lastmod></url><url><loc>https://jmorag.netlify.com/tags/meta/</loc><lastmod>2020-03-15T00:00:00-04:00</lastmod></url><url><loc>https://jmorag.netlify.com/posts/</loc><lastmod>2020-03-15T00:00:00-04:00</lastmod></url><url><loc>https://jmorag.netlify.com/tags/</loc><lastmod>2020-03-15T00:00:00-04:00</lastmod></url><url><loc>https://jmorag.netlify.com/categories/</loc></url></urlset>
+<?xml version="1.0" encoding="utf-8" standalone="yes" ?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  
+  <url>
+    <loc>https://jmorag.netlify.com/tags/haskell/</loc>
+    <lastmod>2020-03-20T00:00:00+00:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/</loc>
+    <lastmod>2020-03-20T00:00:00+00:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/posts/</loc>
+    <lastmod>2020-03-20T00:00:00+00:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/tags/</loc>
+    <lastmod>2020-03-20T00:00:00+00:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/posts/zip-tree1/</loc>
+    <lastmod>2020-03-20T00:00:00+00:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/about/</loc>
+    <lastmod>2020-03-15T00:00:00-04:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/posts/corona/</loc>
+    <lastmod>2020-03-15T00:00:00-04:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/tags/meta/</loc>
+    <lastmod>2020-03-15T00:00:00-04:00</lastmod>
+  </url>
+  
+  <url>
+    <loc>https://jmorag.netlify.com/categories/</loc>
+  </url>
+  
+</urlset>

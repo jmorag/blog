@@ -4,16 +4,26 @@ languageCode = "en-us"
 Title = "Joseph Morag"
 # Copyright notice. This is displayer in the footer.
 copyright = "&copy; Joseph Morag, 2020"
-theme = "potato-dark"
+theme = "hugo-theme-noteworthy"
+# available themes:
+  # contrast-hugo - math works, title "Joseph Morag" is duplicated, no youtube or github icons
+  # er - title box in the corner a bit weird but everything else works fine
+  # hugo-dusk - math broken, no next/prev links on posts
+  # hugo-kiera - math broken, links a shitty color, otherwise good
+  # hugo-primer - need to figure out TOC, about shows up in posts
+  # hugo-theme-noteworthy - math wonky looking but works, no next/prev
+  # Mainroad - no youtube/gh or next/prev, Lauren doesn't like it
+  # solar-theme-hugo - math broken, no next/prev, about shows up in posts
 
 [params]
-  paginate = 10
-  # Social accounts. Link to these accounts are displayed in the header and
+  # showTagCloud = false
+  # paginate = 10
   # footer
   # twitter = "Your Twitter username"
   # facebook = "Your Facebook username"
   # instagram = "Your Instagram username"
-  github = "jmorag"
+  github = "https://github.com/jmorag"
+  reddit = "https://www.reddit.com/user/jmorag"
   # gitlab = "Your GitLab username"
   # npm = "Your npm username"
   # codepen = "Your CodePen username"
@@ -23,7 +33,7 @@ theme = "potato-dark"
   # pinterest = "Your Pinterest username"
   # tumblr = "Your Tumblr username"
   # vimeo = "Your Vimeo username"
-  youtube = "UCqCd5nmIEU9u62dpq3h4bvg"
+  youtube = "https://youtube.com/channel/UCqCd5nmIEU9u62dpq3h4bvg"
   # linkedin = "Your LinkedIn username"
   # Disqus shortname
   # disqus = ""
@@ -31,7 +41,6 @@ theme = "potato-dark"
   # ga_api_key = "Your Google Analytics tracking id"
   # Logo image. This is displayed ogp image.
   # logo = "/path/to/logo"
-  # favicon = "/path/to/favicon"
 
 [[menu.main]]
     name = "Blog"
@@ -47,33 +56,3 @@ theme = "potato-dark"
     name = "Tags"
     url = "/tags"
     weight = 3
-
-# [[menu.main]]
-#     identifier = "theme"
-#     name = "Theme"
-#     weight = 3
-
-# [related]
-#   # Only include matches with rank >= threshold. This is a normalized rank between 0 and 100.
-#   threshold = 80
-
-#   # To get stable "See also" sections we, by default, exclude newer related pages.
-#   includeNewer = false
-
-#   # Will lower case keywords in both queries and in the indexes.
-#   toLower = false
-
-#   [[related.indices]]
-#   name = "keywords"
-#   weight = 150
-#   [[related.indices]]
-#   name  = "author"
-#   toLower = true
-#   weight = 30
-#   [[related.indices]]
-#   name  = "tags"
-#   weight = 100
-#   [[related.indices]]
-#   name  = "date"
-#   weight = 10
-#   pattern = "2017"

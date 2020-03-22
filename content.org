@@ -51,7 +51,7 @@ Maintaining a focus into a recursive data structure can be elegantly solved by z
 #+end_src
 We could define them polymorphically, but the problem only uses =Int=s. 
 
-The first operation is to visit the $n$th child of the current node. We accomplish this by splitting the current focus's children at the $n-1$th position [fn::the hackerrank problem counts children from 1 but Haskell lists are 0-indexed, because the Haskell language designers aren't monsters], making the $n-1$th element our new focus, and appending a new crumb with its left and right siblings and parent value to the list of preceding crumbs.
+The first operation is to visit the \(n\)th child of the current node. We accomplish this by splitting the current focus's children at the \(n-1\)th position [fn::the hackerrank problem counts children from 1 but Haskell lists are 0-indexed, because the Haskell language designers aren't monsters], making the \(n-1\)th element our new focus, and appending a new crumb with its left and right siblings and parent value to the list of preceding crumbs.
 
 #+begin_src haskell
   visitChild :: Int -> Zipper -> Zipper

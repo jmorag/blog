@@ -1,3 +1,24 @@
-[submodule "themes/potato-dark"]
-	path = themes/potato-dark
-	url = https://github.com/surajmandalcell/potato-dark
+[submodule "themes/er"]
+	path = themes/er
+	url = https://github.com/lingxz/er
+[submodule "themes/hugo-theme-noteworthy"]
+	path = themes/hugo-theme-noteworthy
+	url = https://github.com/kimcc/hugo-theme-noteworthy
+[submodule "themes/Mainroad"]
+	path = themes/Mainroad
+	url = https://github.com/Vimux/Mainroad.git
+[submodule "themes/hugo-kiera"]
+	path = themes/hugo-kiera
+	url = https://github.com/avianto/hugo-kiera
+[submodule "themes/contrast-hugo"]
+	path = themes/contrast-hugo
+	url = https://github.com/niklasbuschmann/contrast-hugo
+[submodule "themes/hugo-dusk"]
+	path = themes/hugo-dusk
+	url = https://github.com/gyorb/hugo-dusk
+[submodule "themes/hugo-primer"]
+	path = themes/hugo-primer
+	url = https://github.com/qqhann/hugo-primer
+[submodule "themes/solar-theme-hugo"]
+	path = themes/solar-theme-hugo
+	url = https://github.com/bake/solar-theme-hugo
