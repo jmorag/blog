@@ -25,12 +25,12 @@ Maintaining a focus into a recursive data structure can be elegantly solved by z
 #+END_SRC
 We could define them polymorphically, but the problem only uses =Int= s. 
 
-The first operation is to visit the \(n^\mathrm{th}\) child of the current node. We accomplish this by splitting the current focus's children at the \(n-1^\mathrm{th}\) position [fn::the hackerrank problem counts children from 1 but Haskell lists are 0-indexed, because the Haskell language designers aren't monsters], making the \(n-1^\mathrm{th}\) element our new focus, and appending a new crumb with its left and right siblings and parent value to the list of preceding crumbs.
+The first operation is to visit the \(n^\mathrm{th}\) child of the current node. We accomplish this by splitting the current focus's children at the \(n^\mathrm{th}\) position, making the \(n^\mathrm{th}\) element our new focus, and appending a new crumb with its left and right siblings and parent value to the list of preceding crumbs.
 
 #+BEGIN_SRC haskell
   visitChild :: Int -> Zipper -> Zipper
   visitChild n (Node x children, crumbs) =
-    let (left, (focus : right)) = splitAt (n - 1) children
+    let (left, (focus : right)) = splitAt n children
     in  (focus, Crumb x left right : crumbs)
 #+END_SRC
 
@@ -117,7 +117,10 @@ The =foldM= function from =Control.Monad= takes a function of type =Monad m => (
             "parent" -> visitParent
             _        -> error $ "Invalid direction: " <> dir
       in  pure (f zipper)
-    ["visit", "child", n] -> pure (visitChild (read n) zipper)
+    -- The hackerrank problem counts children from 1.
+    -- Haskell lists are 0-indexed, though because
+    -- the Haskell language designers aren't monsters
+    ["visit", "child", n] -> pure (visitChild (read n - 1) zipper)
     ["insert", dir, x] ->
       let f = case dir of
             "left"  -> insertLeft
