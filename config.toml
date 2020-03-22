@@ -1,9 +1,10 @@
-#Uncomment as needed
-baseurl = "https://jmorag.netlify.com/"
+baseURL = "https://jmorag.netlify.com/"
 languageCode = "en-us"
 Title = "Joseph Morag"
-# Copyright notice. This is displayer in the footer.
-copyright = "&copy; Joseph Morag, 2020"
+enableRobotsTXT = true
+paginate = 4
+summaryLength = 50
+
 theme = "hugo-theme-noteworthy"
 # available themes:
   # contrast-hugo - math works, title "Joseph Morag" is duplicated, no youtube or github icons
@@ -15,10 +16,20 @@ theme = "hugo-theme-noteworthy"
   # Mainroad - no youtube/gh or next/prev, Lauren doesn't like it
   # solar-theme-hugo - math broken, no next/prev, about shows up in posts
 
+googleAnalytics = "" 
+
+[taxonomies]
+  tag = "tags"
+
+[author]
+  name = "Joseph Morag"
+
+# Set to false to disallow raw HTML in markdown files
+[markup.goldmark.renderer]
+  unsafe = true
+
 [params]
-  # showTagCloud = false
-  # paginate = 10
-  # footer
+  description = "A blog about various technologies I like"
   # twitter = "Your Twitter username"
   # facebook = "Your Facebook username"
   # instagram = "Your Instagram username"
@@ -28,19 +39,12 @@ theme = "hugo-theme-noteworthy"
   # npm = "Your npm username"
   # codepen = "Your CodePen username"
   # dribbble = "Your Dribbble username"
-  # fivehundredpx = "Your 500px username" # 500px
   # flickr = "Your Flickr username"
   # pinterest = "Your Pinterest username"
   # tumblr = "Your Tumblr username"
   # vimeo = "Your Vimeo username"
   youtube = "https://youtube.com/channel/UCqCd5nmIEU9u62dpq3h4bvg"
   # linkedin = "Your LinkedIn username"
-  # Disqus shortname
-  # disqus = ""
-  # Google Analytics API key.
-  # ga_api_key = "Your Google Analytics tracking id"
-  # Logo image. This is displayed ogp image.
-  # logo = "/path/to/logo"
 
 [[menu.main]]
     name = "Blog"
@@ -56,3 +60,18 @@ theme = "hugo-theme-noteworthy"
     name = "Tags"
     url = "/tags"
     weight = 3
+
+# Most aggressive privacy settings
+[privacy]
+  [privacy.disqus]
+    disable = true
+  [privacy.googleAnalytics]
+    disable = true
+  [privacy.instagram]
+    disable = true
+  [privacy.twitter]
+    disable = true
+  [privacy.vimeo]
+    disable = true
+  [privacy.youtube]
+    disable = true
