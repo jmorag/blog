@@ -1,0 +1,69 @@
+#+title: Zipping Trees, Part 2
+#+date: 2020-03-23
+#+tags[]: haskell zipper
+#+draft: false
+
+In [[/posts/zip-tree1][part 1]] of our tree zipping series, we identified three "problems" with our solution:
+# more
+#+BEGIN_QUOTE
+1. Using unnamed tuples and product types with no record syntax can obscure the meaning of each field and requires some extra typing in each function for elements of the zipper that remain unchanged during a particular transformation.
+2. The =Tree= type from containers uses lists, which is useful for infinite trees. However, our trees are guaranteed to be finite. Moreover, we have to append to the end of a list or drop its last element when visiting or inserting nodes, which takes linear time in the size of the list. We are told that any given node will have at most 10 children, so this isn't a huge issue, but it would be a serious performance problem with a larger branching factor.
+3. All of the =visit= functions are partial and will crash if there is an invalid operation in the instruction list, such as visiting the child of a leaf node or the parent of the tree root. Hackerrank guarantees that all operations will be valid, so crashing on what should be unreachable cases is reasonable. We could return =Maybe Zipper= from all of our functions, but that would be more cumbersome to deal with. Perhaps the best solution would be to explicitly call =error= with an informative message rather than getting something about "irrefutable patterns."
+#+END_QUOTE
+
+Initially, I was going to address 2. using sequences from =Data.Sequence=, but as u/ryani commented on [[https://www.reddit.com/r/haskell/comments/fn54kc/navigating_trees_with_zippers_part_1/fl8hxg1/?context=3][reddit]], we should be storing the left siblings reversed, since we always care most about the immediate left sibling, not the left-/most/ sibling. This is also how zippers on lists work, so it is only natural to use this representation in a blog series about zippers. How does this change our navigation functions?
+
+In =visitChild=, we have to reverse the left half of the current focus's children when making a =Crumb= out of them. We could call =reverse= after calling =splitAt=, but instead we just use our own =splitRev= function.
+
+#+BEGIN_SRC haskell
+splitRev :: Int -> [a] -> ([a], a, [a])
+splitRev n = loop n [] where
+  loop 0 left (focus   : right) = (left, focus, right)
+  loop m left (sibling : right) = loop (m - 1) (sibling : left) right
+  loop _ _ [] = error "splitRev called with too large an index"
+#+END_SRC
+
+=visitChild= now becomes
+#+BEGIN_SRC haskell
+visitChild :: Int -> Zipper -> Zipper
+visitChild n (Node x children, crumbs) =
+  let (left, focus, right) = splitRev n children
+  in  (focus, Crumb x left right : crumbs)
+#+END_SRC
+
+When visiting the parent, node, instead of concatenating the left and right siblings, we have to make sure to re-reverse the left. We can use the report prelude's =foldl=[fn::Actually we're going to use =foldl'= from =Data.List= which is semantically the same but performs better because it is more strict.] implementation of reverse but with the right siblings as the starting accumulator.
+#+BEGIN_SRC haskell
+visitParent :: Zipper -> Zipper
+visitParent (focus, Crumb parent left right : cs) =
+  (Node parent (foldl' (flip (:)) (focus:right) left), cs)
+#+END_SRC
+
+Deleting the current focus, as before, is almost identical.
+#+BEGIN_SRC haskell
+delete :: Zipper -> Zipper
+delete (_, Crumb parent left right : cs) =
+  (Node parent (foldl' (flip (:)) right left), cs)
+#+END_SRC
+
+Visiting the left and right siblings are now both =O(1)=, as is inserting new nodes at those positions.
+#+BEGIN_SRC haskell
+visitLeft :: Zipper -> Zipper
+visitLeft (focus, Crumb parent (l : ls) right : cs) =
+  (l, Crumb parent ls (focus : right) : cs)
+
+visitRight :: Zipper -> Zipper
+visitRight (focus, Crumb parent left (r : rs) : cs) =
+  (r, Crumb parent (focus : left) rs : cs)
+
+insertLeft :: Int -> Zipper -> Zipper
+insertLeft x (focus, Crumb parent left right : cs) =
+  (focus, Crumb parent (Node x [] : left) right : cs)
+
+insertRight :: Int -> Zipper -> Zipper
+insertRight x (focus, Crumb parent left right : cs) =
+  (focus, Crumb parent left (Node x [] : right) : cs)
+#+END_SRC
+
+=change, insertChild=, and =main= all remain identical.
+
+The only operation that doesn't run in constant time now is =visitParent=, which takes linear time in the number of left siblings. However, since this is never more than 9, it's basically still a constant. Given the small branching factor, it would be interesting to see what impact using sequences or vectors in place of lists would have on performance. Sequences guarantee =O(log(min(|left|, |right|)))= time concatenation, which is slightly faster than =O(|left|)= for lists whereas unboxed vectors have such good cache locality that the copy overhead they would induce could be negligible on modern CPUs. Stay tuned for future posts for a look at actually benchmarking these ideas and for a look at solving problems 1 and 3 that we mentioned in [[/posts/zip-tree1][part 1]]!
