@@ -1,8 +1,7 @@
 #+title: Zipping Trees, Part 1
 #+date: 2020-03-20
-#+tags[]: haskell
+#+tags[]: haskell zipper
 #+math: true
-# #+draft: true
 
 While trawling hackerrank in order to procrastinate doing "real" work, I came across [[https://www.hackerrank.com/challenges/tree-manager/problem][this]] problem in the Functional Programming section. It has you perform various incremental operations on a rose tree, such as inserting and deleting nodes and visiting adjacent nodes in the tree. In the spirit of sticking with [[https://www.simplehaskell.org/][Simple Haskell]], our first attempt at the problem will use only one benign language extension and two imports.
 # more
@@ -137,4 +136,4 @@ This solution is correct and runs quickly enough to satisfy hackerrank's time co
 2. The =Tree= type from containers uses lists, which is useful for infinite trees. However, our trees are guaranteed to be finite. Moreover, we have to append to the end of a list or drop its last element when visiting or inserting nodes, which takes linear time in the size of the list. We are told that any given node will have at most 10 children, so this isn't a huge issue, but it would be a serious performance problem with a larger branching factor.
 3. All of the =visit= functions are partial and will crash if there is an invalid operation in the instruction list, such as visiting the child of a leaf node or the parent of the tree root. Hackerrank guarantees that all operations will be valid, so crashing on what should be unreachable cases is reasonable. We could return =Maybe Zipper= from all of our functions, but that would be more cumbersome to deal with. Perhaps the best solution would be to explicitly call =error= with an informative message rather than getting something about "irrefutable patterns."
 
-In part 2, we will see how going slightly up the Haskell complexity chain can solve these problems, as well as adding a whole slew of new ones!
+In [[/posts/zip-tree2][part 2]], we will see how going slightly up the Haskell complexity chain can solve these problems, as well as adding a whole slew of new ones!
