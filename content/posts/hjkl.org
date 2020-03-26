@@ -1,0 +1,46 @@
+#+TITLE: HJKL and Colemak
+#+DATE: 2020-03-26
+#+TAGS[]: keyboards, i3, emacs
+#+DRAFT: true
+
+I am a proud owner of both the [[https://atreus.technomancy.us/][Atreus]] and [[https://shop.keyboard.io/][Keyboardio Model01]] keyboards. They are both excellent pieces of hardware - wooden enclosures, mechanical switches, the works. With [[https://docs.qmk.fm/][QMK]], they are infinitely configurable. The creators are also very responsive. In the course of replacing the Matias Quiet Click switches with linear ones on my Atreus, I broke a couple keycaps and shorted part of the PCB. I reached out to Phil Hagelberg, and in addition to guiding me through the process of how to wire the broken connection by hand, he very kindly mailed me some extra keycaps. I encourage everyone to check out the upcoming [[https://www.kickstarter.com/projects/keyboardio/atreus][Keyboardio Atreus]], a professionally manufactured Atreus delivered by the Keyboardio team. Despite already owning an Atreus, I'm sorely tempted to get one of these myself, if only for the new hot-swapping capabilities and beautiful palm rest.[fn::This article isn't sponsored by Keyboardio or Phil, I just like their hardware.]
+
+* The Problem
+Switching between columnar staggering and traditional laptop keyboards is /hard/. To make matters worse, I have appalling touch typing habits left over from when I was 11. In a way, though, it makes switching between my laptop and a columnar keyboard easier, as I can learn to touch type properly on the columnar keyboard while keeping my weird 3.5-finger typing muscle memory on the typewriter style board. So as not to confuse myself, I've even switched to [[https://colemakmods.github.io/mod-dh/][Colemak Mod-DHm]] on the Atreus and Model01 while retaining QWERTY everywhere else.
+#+CAPTION: Image taken from [[https://colemakmods.github.io/mod-dh/keyboards.html]]
+[[/images/colemak-dhm.png]]
+
+When typing prose, everything is great. My speed with both QWERTY and Colemak is around 65 WPM, although after a few rounds on [[https://play.typeracer.com/][typeracer]], my hands feel much better with Colemak than QWERTY. I'm not quite there yet when typing code; [[https://typing.io/lessons][typing.io]] reports 29 WPM with Colemak vs. 45 WPM with QWERTY. With more practice, though, I'm sure that the gap will narrow. QMK keyboards have phenomenal access to commonly used symbols through layers - I just have to get used to them.
+
+What I cannot seem to overcome to make the switch full-time to Colemak is my HJKL muscle memory. I switched from Vim to Emacs completely circa October 2018, and I use [[https://github.com/jmorag/kakoune.el][my own implementation]] of the [[https://kakoune.org/][Kakoune]] editing paradigm as opposed to evil mode (a topic for another blog post), but the use of HJKL as arrows persists in my text editor, in my window manager, i3[fn::The default i3 keybindings actually have "jkl;" as the primary directions, which is probably how it should be, but by the time I started using i3, I was used to "hjkl" so I switched the i3 bindings to match.], and in my browser through the [[https://vimium.github.io/][Vimium extension]]. It's so strongly ingrained in my right hand that on my laptop, I rest my right hand on "hjkl" rather than "jkl;" as would be proper. If I were to change all my bindings in all of my programs wholesale, I would remap "hjkl" to "neio" as opposed to "mnei." However, this would destroy my ability to do anything on my laptop, which, although in the long term would probably be ideal, in the short term would be a disaster. Ideally, every program which makes heavy use of "hjkl" bindings should have an option to switch modes to accommodate the same hand position on Colemak. The remapping looks like this:
+
+|--------+---------|
+| QWERTY | Colemak |
+|--------+---------|
+| h      | n       |
+| j      | e       |
+| k      | i       |
+| l      | o       |
+| n      | j       |
+| e      | k       |
+| i      | l       |
+| o      | h       |
+|--------+---------|
+
+The choice of what to do with QWERTY "neio" is somewhat arbitrary. I might decide to change them around later. How might we go about affecting this big structural change?
+
+** i3
+i3's configuration file is written in simple plain-text. It doesn't support conditional logic. In fact, i3 doesn't even support specifying which file to load from; it always reads from =/etc/i3/config=, =~/.i3/config=, or =~/.config/i3/config=. It [[https://i3wm.org/docs/userguide.html#keybindings][does support]] binding events to keycodes as opposed to keysyms, but this makes more sense for dealing with keyboard layouts changed with =xmodmap=, not directly in the firmware. The simplest thing to do, then, is to copy my existing i3 config to =~/.config/i3/config-{qwerty,colemak}=, edit the colemak version, and then symlink the appropriate version to =~/.config/i3/config= as appropriate. This is somewhat annoying, but mostly a one-time cost, as I very rarely edit my i3 configuration. To switch modes, we add =bindsym $mod+i exec --no-startup-id "echo -e qwerty\\\ncolemak | dmenu | fish ~/.config/i3/keyboard-layout.fish"= to the i3 config (change =$mod+i= to =$mod+l= in the Colemak version), which calls this fish script to symlink the appropriate file and reload i3.
+#+BEGIN_SRC fish
+read -l mode
+switch $mode
+    case "qwerty"
+        ln -sf ~/.config/i3/config-qwerty ~/.config/i3/config
+        i3-msg reload
+    case "colemak"
+        ln -sf ~/.config/i3/config-colemak ~/.config/i3/config
+        i3-msg reload
+    case '*'
+        echo "Unknown keyboard layout" $mode
+end
+#+END_SRC
