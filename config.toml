@@ -1,4 +1,4 @@
-baseURL = "https://jmorag.netlify.com/"
+baseURL = "https://blog.josephmorag.com/"
 languageCode = "en-us"
 Title = "Joseph Morag"
 enableRobotsTXT = true
