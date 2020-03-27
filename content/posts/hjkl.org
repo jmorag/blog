@@ -1,7 +1,6 @@
 #+TITLE: HJKL and Colemak
-#+DATE: 2020-03-26
+#+DATE: 2020-03-27
 #+TAGS[]: keyboards, i3, emacs
-#+DRAFT: true
 
 I am a proud owner of both the [[https://atreus.technomancy.us/][Atreus]] and [[https://shop.keyboard.io/][Keyboardio Model01]] keyboards. They are both excellent pieces of hardware - wooden enclosures, mechanical switches, the works. With [[https://docs.qmk.fm/][QMK]], they are infinitely configurable. The creators are also very responsive. In the course of replacing the Matias Quiet Click switches with linear ones on my Atreus, I broke a couple keycaps and shorted part of the PCB. I reached out to Phil Hagelberg, and in addition to guiding me through the process of how to wire the broken connection by hand, he very kindly mailed me some extra keycaps. I encourage everyone to check out the upcoming [[https://www.kickstarter.com/projects/keyboardio/atreus][Keyboardio Atreus]], a professionally manufactured Atreus delivered by the Keyboardio team. Despite already owning an Atreus, I'm sorely tempted to get one of these myself, if only for the new hot-swapping capabilities and beautiful palm rest.[fn::This article isn't sponsored by Keyboardio or Phil, I just like their hardware.]
 
@@ -44,3 +43,81 @@ switch $mode
         echo "Unknown keyboard layout" $mode
 end
 #+END_SRC
+
+** Emacs
+For Emacs, making an entirely separate configuration and reloading the editor every time I change keyboards simply will not do. My =init.el= is over 1200 lines long vs. a mere 220 lines of i3 config, not counting my =kakoune.el= package which bakes in many "hjkl" bindings. Moreover, I tweak my setup constantly, and it would be a nightmare to keep two versions of it synchronized. Fortunately, Emacs is Emacs, and is therefore infinitely malleable in the hands of anyone who can write elisp. I'm not the world's foremost elisp expert by any stretch of the imagination, but if anything, this is a good opportunity to write something that's not just a =(use-package)= declaration.
+
+We'll start by defining the translation table and the keymaps we want to alter:
+
+#+BEGIN_SRC emacs-lisp
+(require 'dash)
+(defvar colemak-translations
+  (-tree-map #'kbd '(("h" "n")
+                     ("j" "e")
+                     ("k" "i")
+                     ("l" "o")
+                     ("n" "j")
+                     ("e" "k")
+                     ("i" "l")
+                     ("o" "h")
+                     ;; ("C-h" "C-n") etc. go here as well
+                     )))
+(defvar colemak-translation-maps
+  '(ryo-modal-mode-map
+    lispy-mode-map
+    ;; etc...
+    ))
+#+END_SRC
+
+Then, given a keymap, we can apply these translations or remove them, depending on which keyboard we're using. We create a backup copy of the keymap or reuse an existing one, then loop through the translations we defined earlier and execute the re-mappings.
+#+BEGIN_SRC emacs-lisp
+(require 'cl-lib)
+(defun apply-or-revert-translations (translations keymap-symbol apply)
+  "If APPLY then apply TRANSLATIONS to KEYMAP-SYMBOL. Otherwise revert them."
+  (when (boundp keymap-symbol)
+    (let* ((keymap (symbol-value keymap-symbol))
+           (backup-symbol (intern (concat (symbol-name keymap-symbol) "-backup")))
+           (backup-map (if (boundp backup-symbol)
+                           (symbol-value backup-symbol)
+                         (set backup-symbol (copy-keymap keymap)))))
+      (cl-loop for (from to) in translations
+               for command = (lookup-key backup-map from)
+               when (commandp command)
+               do (define-key keymap (if apply to from) command)))))
+#+END_SRC
+Finally, we wrap it all into a nice minor mode. I use [[https://github.com/seagle0128/doom-modeline][doom-modeline]] and want it to indicate whether or not the mode is active so I don't go typing all willy-nilly and destroy my buffer.
+#+BEGIN_SRC emacs-lisp
+(define-minor-mode colemak-mode
+  "Toggle colemak-mode."
+  :init-value nil
+  :lighter " Colemak"
+  :global t
+  (progn
+    (setq global-mode-string (when colemak-mode "Colemak"))
+    (doom-modeline-refresh-frame)
+    (cl-loop for map in colemak-translation-maps
+             do (apply-or-revert-translations
+                 colemak-translations map colemak-mode))))
+#+END_SRC
+ 
+The full code is available within [[https://github.com/jmorag/.emacs.d/blob/master/colemak/colemak-mode.el][my .emacs.d]] [fn::Currently, this code just ignores unbound keymaps and commands. In practice, that means I'll have to toggle it again after I enter a previously un-loaded keymap. There should be a way to wrap everything in a =(eval-after-load)= call, but I just haven't gotten around to figuring that out yet. If anyone has some pointers on how best to accomplish this, I'd be very grateful for the advice.].
+
+** Vimium
+Vimium, like i3, has a simple configuration that only supports basic remapping. Unlike i3, there's no way (as far as I know) to bind a keypress to reload the configuration. There is a facility to backup and restore configurations, but that has to be done by going to the configuration page, scrolling to the bottom and clicking "Restore." Fortunately, though, Vimium has enough unused real-estate in normal mode that QWERTY and Colemak bindings can exist simultaneously without conflict.
+#+BEGIN_SRC vimrc
+map e scrollDown
+map E previousTab
+map i scrollUp
+map I nextTab
+map n scrollLeft
+map N goBack
+map o scrollRight
+map O goForward
+map a enterInsertMode
+map b Vomnibar.activate " by default searches bookmarks
+map B Vomnibar.activateInNewTab
+map s performFind " previously unused, s stands for Search
+map S performBackwardsFind
+#+END_SRC
+* End
+If you're still reading this, thanks for sticking around. I hope that anyone with a similar situation can get some use out of this!
