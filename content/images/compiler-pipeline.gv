@@ -1,0 +1,8 @@
+digraph block {
+    Source -> AST;
+    Source -> Error;
+    AST -> Error;
+    AST -> SAST;
+    SAST -> LLVM;
+    SAST [label = "Semantically checked AST"];
+}
