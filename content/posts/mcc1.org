@@ -1,0 +1,936 @@
+#+TITLE: Micro C, Part 1
+#+DATE: 2020-04-10
+#+TAGS[]: llvm, haskell
+#+DRAFT: false
+
+Welcome to the beginning of the compiler proper! If you haven't yet, check out [[/posts/mcc0][part 0]] for a description of the project and help setting up the development environment.
+
+#+BEGIN_QUOTE
+A note about the presentation structure:
+
+We will be going through each phase of the compiler mostly in its entirety before moving onto the next phase. Most other tutorials and books don't do this. Instead, they build up the language by implementing one feature at a time at each stage of the pipeline. When building your own compiler, I /strongly/ recommend following this approach, as opposed to trying to write the complete parser, or the complete semantic analyzer, in one go, as having the working pipeline, however minimal, to test with, is invaluable for debugging. 
+
+I've decided to present a fairly complete version of the language here at every pass for better code locality, and because I've already written the whole thing, and it would be a lot of work to split it back up into separate features. In future parts, we'll explore adding features to an already complete pipeline, but they'll be ones that I haven't implemented yet.
+#+END_QUOTE
+
+* Defining the language
+First, we'll encode the C abstract syntax tree in Haskell types. [fn:1]
+C expressions can be literal integers, floats, characters, strings (we'll say much more about strings later), booleans, null (I'm sorry), and other, more complicated forms.
+
+#+BEGIN_SRC haskell
+module Microc.Ast where
+import           Data.Text                      ( Text )
+import           Data.Text.Prettyprint.Doc
+import           Data.Char                      ( chr )
+
+-- Binary operators
+data Op = Add
+        | Sub
+        | Mult
+        | Div
+        -- I've added an exponentiation operator ** for fun
+        | Power
+        | Equal
+        | Neq
+        | Less
+        | Leq
+        | Greater
+        | Geq
+        | And
+        | Or
+        | BitAnd
+        | BitOr
+        deriving (Show, Eq)
+
+-- Unary operators 
+-- (no post/pre-fix increment or decrement for simplicity)
+data Uop = Neg
+         | Not
+         deriving (Show, Eq)
+
+data Expr = Literal Int
+          | StrLit Text
+          | CharLit Int -- ^ Chars get lowered to ints during codegen
+          | Fliteral Double
+          | BoolLit Bool -- ^ true | false
+          | Null
+          | Id Text -- ^ variables
+          | Binop Op Expr Expr -- ^ binary operators
+          | Unop Uop Expr -- ^ unary operators (just - and !)
+          | Call Text [Expr] -- ^ f(x, y, z)
+          | Cast Type Expr -- ^ (int *)malloc(100)
+          | Access Expr Expr -- ^ struct access
+          | Deref Expr -- ^ *pointer
+          | Addr Expr -- ^ &expression
+          | Assign Expr Expr
+          | Sizeof Type
+          | Noexpr -- ^ used for dangling if's
+          deriving (Show, Eq)
+#+END_SRC
+
+Statements can be naked expressions, blocks, returns, or control flow. Our language will only have =if=, =for=, and =while=. At some later time, I might experiment with adding =goto=, =break=, and =continue= as they're quite difficult/interesting to generate llvm for, but for now we have enough to worry about.
+
+#+BEGIN_SRC haskell
+data Statement = Expr Expr
+               | Block [Statement]
+               | Return Expr
+               | If Expr Statement Statement
+               | For Expr Expr Expr Statement
+               | While Expr Statement
+               deriving (Show, Eq)
+#+END_SRC
+
+The notable omissions from C's type system are unions, arrays, function pointers, and typedefs. Out of C's vast array of numeric types, we just support =int= (32-bit) and =float= (actually double precision), as implementing the rest of them isn't spectacularly interesting. We will, however, have normal pointers and structs, which are plenty powerful and dangerous on their own.
+
+#+BEGIN_SRC haskell
+data Type = Pointer Type
+          | TyInt
+          | TyBool
+          | TyFloat
+          | TyChar
+          | TyVoid
+          | TyStruct Text
+          deriving (Show, Eq)
+#+END_SRC
+
+Finally, with function and struct definitions, we can represent whole (single file) Micro C programs.
+
+#+BEGIN_SRC haskell
+data Bind = Bind { bindType :: Type, bindName :: Text } 
+  deriving (Show, Eq)
+data Struct = Struct { structName :: Text, structFields :: [Bind] }
+  deriving (Show, Eq)
+data Function = Function
+  { typ  :: Type
+  , name :: Text
+  , formals :: [Bind]
+  , locals :: [Bind]
+  , body :: [Statement]
+  }
+  deriving (Show, Eq)
+
+data Program = Program [Struct] [Bind] [Function] deriving (Eq, Show)
+#+END_SRC
+
+(Full source of the AST [[https://github.com/jmorag/mcc/blob/master/src/Microc/Ast.hs][here]])
+
+Using the excellent [[https://hackage.haskell.org/package/prettyprinter-1.6.1][prettyprinter]] library, we can define =Pretty= instances for the AST types which will allow us to serialize our AST back to valid C source. They are elided in this post, as they're very mechanical to write, but they are and the end of the linked source, for anyone interested.[fn::In a future post, I might try defining an =Arbitrary= instance for the AST, so we can check that =pretty_print . parse == id= with property testing.]
+
+[fn:1] Even though this is a toy compiler, we'll use =Text= instead of =String= because [[http://www.stephendiehl.com/posts/strings.html][you should never use =String=]]. Since we won't explicitly support unicode in the source and real C certainly doesn't either, we could use =ByteString= but that's not really the type we want to represent human-readable text.
+
+* Parsing the language
+Parser theory is a vast field, and one of the oldest in computer science. After all, we needed to be able to parse computer languages in order to stop having to write assembly and move on to higher level problems. Writing parsers is also a favorite pastime of the haskell community; there are 210 libraries in the "Parsing" category on hackage alone, ranging from parsec-style combinator libraries, to lex/yacc style parser generators, to implementations of Earley's algorithm, and more. I cannot claim to give even a remotely thorough treatment of various parsing strategies here, but I can at least demonstrate two different methods of parsing and compare them.
+
+** Alex/Happy
+First, we'll discuss using haskell's lex/yacc style parser generator libraries. [[https://www.haskell.org/alex/][Alex]] is a lexer generator, similar to [[http://dinosaur.compilertools.net/#lex][Lex]] that, given a set of rules with regular expressions, transforms the string of a source file into a series of tokens. The top of the Alex file declares the generated module name and necessary imports.
+
+#+BEGIN_SRC haskell
+{
+module Microc.Scanner.Generator where
+import Microc.Ast
+}
+#+END_SRC
+
+Then, we specify the "wrapper" type and some regex variables.
+#+BEGIN_SRC
+%wrapper "basic"
+
+$alpha = [a-zA-Z]
+$digit = 0-9
+$newline = [\r\n]
+#+END_SRC
+
+The meat of the lexer is the rule for how to transform characters into tokens. Code inside braces denotes a haskell function of type =String -> Lexeme= which is called on whatever matches the regex rule on the left. A semicolon tells Alex to ignore the matching text, which is how comments are implemented.
+#+BEGIN_SRC
+tokens :-
+ $white+  ;
+ "/*" ( $newline | [^\*] | \*+ ($newline | [^\/]) )* "*/" ;
+ "//" [^$newline]* $newline ;
+ \(       { const LPAREN   }
+ \)       { const RPAREN   }
+ \{       { const LBRACE   }
+ \}       { const RBRACE   }
+ \;       { const LSemi    }
+ \,       { const LComma   }
+ \+       { const LAdd     }
+ \-       { const LSub     }
+ \*       { const LMul     }
+ \/       { const LDiv     }
+ \=       { const LAssign  }
+ \=\=     { const LEqual   }
+ \!\=     { const LNeq     }
+ \<       { const LLess    }
+ \<\=     { const LLeq     }
+ \>       { const LGreater }
+ \>\=     { const LGeq     }
+ \&\&     { const LAnd     }
+ \|\|     { const LOr      }
+ \!       { const LNot     }
+ \&       { const LBitAnd  }
+ \|       { const LBitOr   }
+ \*\*     { const LPow     }
+ \.       { const LDot     }
+ \-\>     { const LArrow   }
+ "if"     { const LIf      }
+ "else"   { const LElse    }
+ "for"    { const LFor     }
+ "while"  { const LWhile   }
+ "return" { const LRet     }
+ "int"    { const $ LType TyInt   }
+ "float"  { const $ LType TyFloat }
+ "bool"   { const $ LType TyBool  }
+ "char"   { const $ LType TyChar  }
+ "void"   { const $ LType TyVoid  }
+ "struct" { const LStruct }
+ "true"   { const $ LBool True    }
+ "false"  { const $ LBool False   }
+ "NULL"   { const LNull }
+ "sizeof" { const LSizeof }
+#+END_SRC
+
+Variables and numeric and string literals are the most interesting pieces of the scanner, as we need to handle floating point conventions and string parsing. Fortunately, we can abuse haskell's =read= function to do most of the heavy lifting for us.
+#+BEGIN_SRC
+ $digit+  { LInt . read }
+ $digit+ \. $digit* ( [eE] [\+\-]? $digit+ )? { LFloat . read }
+ $alpha [$alpha $digit \_]* { LId }
+ \" [^\"]* \"  { LStrLit . read -- this doesn't handle quote escaping }
+ \' [^\'\\] \' { LCharLit . ord . head . init . tail }
+ \'\\$digit+\' { LCharLit . read . init . drop 2 }
+#+END_SRC
+
+Finally, we have the definition of the =Lexeme= type.
+#+BEGIN_SRC haskell
+{
+data Lexeme = LInt Int
+            | LFloat Double
+            | LStrLit String
+            | LCharLit Int
+            | LId String
+            | LType Type
+            | LStruct
+            | LBool Bool
+            | LNull
+            | LRet
+            | LAssign
+            | LComma
+            | LSemi
+            | LPAREN
+            | RPAREN
+            | LBRACE
+            | RBRACE
+            | LBRACK
+            | RBRACK
+            | LFor
+            | LWhile
+            | LIf
+            | LElse
+            | LAdd
+            | LSub
+            | LMul
+            | LDiv
+            | LEqual
+            | LNeq
+            | LLess
+            | LLeq
+            | LGreater
+            | LGeq
+            | LAnd
+            | LOr
+            | LNot
+            | LBitAnd
+            | LBitOr
+            | LPow
+            | LDot
+            | LArrow
+            | LSizeof
+            }
+#+END_SRC
+(Full source of the alex lexer [[https://github.com/jmorag/mcc/blob/master/src/Microc/Scanner/Generator.x][here]].)
+
+After scanning the source and generating the token list, we pass it to [[https://www.haskell.org/happy/][happy]], which generates an LR bottom up parser for our language. As with alex, the beginning of the file is the haskell module and import specification.
+
+#+BEGIN_SRC haskell
+{
+module Microc.Parser.Generator where
+import Microc.Scanner.Generator
+import Microc.Ast
+import Data.Text (pack)
+import Prelude hiding (fst, snd)
+}
+#+END_SRC
+
+Then, we declare the name of the generated parsing function, the token type it will act on, and what to do in case of errors.
+
+#+BEGIN_SRC haskell
+%name parse
+%tokentype { Lexeme }
+%error { parseError }
+#+END_SRC
+
+Happy also requires us to re-declare all of the token types from our lexer generator. The reason for this is unclear to me, as similar tools in other languages don't have this step. However, at least we can use symbols to denote operators instead of writing =LBRACE= everywhere. The =$$='s represent the arguments of the =Lexeme= constructor.
+
+#+BEGIN_SRC haskell
+%token
+  int    { LInt   $$ }
+  float  { LFloat $$ }
+  id     { LId    $$ }
+  ptype  { LType  $$ }
+  char   { LCharLit $$ }
+  string { LStrLit $$ }
+  bool   { LBool  $$ }
+  null   { LNull }
+  return { LRet }
+  struct { LStruct }
+  sizeof { LSizeof }
+  '='    { LAssign }
+  ','    { LComma }
+  ';'    { LSemi }
+  '('    { LPAREN }
+  ')'    { RPAREN }
+  '{'    { LBRACE }
+  '}'    { RBRACE }
+  for    { LFor }
+  while  { LWhile }
+  if     { LIf }
+  else   { LElse }
+  '+'    { LAdd }
+  '-'    { LSub }
+  '*'    { LMul }
+  '/'    { LDiv }
+  '=='   { LEqual }
+  '!='   { LNeq }
+  '<'    { LLess }
+  '<='   { LLeq }
+  '>'    { LGreater }
+  '>='   { LGeq }
+  '&&'   { LAnd }
+  '||'   { LOr  }
+  '!'    { LNot }
+  '&'    { LBitAnd }
+  '|'    { LBitOr  }
+  '**'   { LPow }
+  '.'    { LDot }
+  '->'   { LArrow }
+#+END_SRC
+
+Next, we have the precedence rules for our operators going from lowest to highest. We include a dummy =NOELSE= token to solve ambiguities arising from a possible [[https://en.wikipedia.org/wiki/Dangling_else][dangline else]].
+
+#+BEGIN_SRC haskell
+%nonassoc NOELSE
+%nonassoc else
+%right '='
+%left '|'
+%left '&'
+%left '||'
+%left '&&'
+%left '==' '!='
+%left '<' '>' '<=' '>='
+%left '+' '-'
+%left '*' '/'
+%right '**'
+%right '!' NEG
+%left '.' '->'
+#+END_SRC
+
+Now, the important part of the parser: the recursive parsing rules. Care needs to be taken to make sure that as much as possible, recursive calls to rules happen at the /left/ of a production, as bottom up parsers can deal with these in constant space, whereas right recursion can blow up with sufficiently nested files[fn::I'd be really surprised to see this happen in practice, as no one is writing gigantic microc files (I hope), but it's good form to mention this pitfall anyway.]. This means that when parsing lists of items, we'll need to reverse at some point. As with alex, code in braces is valid haskell, with =$1=, =$2=, etc. representing productions from the 1st, 2nd, etc. rules on the left. The =%%= is required by happy to indicate the beginning of the production rules.
+
+Proceeding top-down, a program consists of a list of struct declarations, global variables, and functions.
+
+#+BEGIN_SRC haskell
+%%
+
+program:
+  decls { Program (reverse $ fst $1) (reverse $ snd $1) (reverse $ thd $1) }
+
+decls:
+   {- empty -} { ([], [], []) }
+ | decls sdecl { (($2 : fst $1), (snd $1), (thd $1)) }
+ | decls vdecl { ((fst $1), ($2 : snd $1), (thd $1)) }
+ | decls fdecl { ((fst $1), (snd $1), ($2 : thd $1)) }
+#+END_SRC
+
+A function declaration is a return type followed by a left paren, followed by 0 or more arguments, followed by a right paren, followed by a list of local variables and statements all enclosed in curly braces.
+
+#+BEGIN_SRC haskell
+fdecl:
+   typ id '(' formals_opt ')' '{' vdecl_list stmt_list '}'
+     { Function { typ = $1,
+         name = pack $2,
+         formals = $4,
+         locals = reverse $7,
+         body = reverse $8 } }
+
+formals_opt:
+    {- empty -} { [] }
+  | formal_list   { reverse $1 }
+
+formal_list:
+    typ id                   { [Bind $1 (pack $2)] }
+  | formal_list ',' typ id { Bind $3 (pack $4) : $1 }
+#+END_SRC
+
+Types are either 0 or more levels of indirection to a raw type or struct. I added pointers to the language after I added the exponentiation operator, so I didn't realize the problems it would cause with pointer dereferencing, but we can use a clever trick to "untokenize" the exponentiation operator back into two dereferencing operators when appropriate.
+
+#+BEGIN_SRC haskell
+typ:
+    ptype stars     { foldr (const Pointer) $1 $2 }
+  | struct id stars { foldr (const Pointer) (TyStruct (pack $2)) $3 }
+
+stars:
+    { [] }
+  | stars '*' { $2 : $1 }
+  -- A hack to get around the power operator clashing with
+  -- the dereferencing operator
+  | stars '**' { $2 : $2 : $1 }
+#+END_SRC
+
+Struct declarations are the keyword =struct= followed by a list of variable declarations enclosed in curly braces.
+#+BEGIN_SRC haskell
+sdecl:
+    struct id '{' vdecl_list '}' ';' { Struct (pack $2) (reverse $4) }
+
+vdecl_list:
+    {- empty -}    { [] }
+  | vdecl_list vdecl { $2 : $1 }
+
+vdecl:
+   typ id ';' { Bind $1 (pack $2) }
+#+END_SRC
+
+Now we have the rules for parsing statements and expressions. The statement code is fairly straightforward except that we have to decorate an =if= statement with no =else= block with =%prec NOELSE= in order to avoid ambiguity in the grammar. We also have a good demonstration of the usefulness of =Noexpr= as a placeholder for empty slots in for loops or naked returns.
+#+BEGIN_SRC haskell
+stmt_list:
+    {- empty -}  { [] }
+  | stmt_list stmt { $2 : $1 }
+
+stmt:
+    expr ';' { Expr $1 }
+  | return ';' { Return Noexpr }
+  | return expr ';' { Return $2 }
+  | '{' stmt_list '}' { Block (reverse $2) }
+  | if '(' expr ')' stmt %prec NOELSE { If $3 $5 (Block []) }
+  | if '(' expr ')' stmt else stmt    { If $3 $5 $7 }
+  | for '(' expr_opt ';' expr ';' expr_opt ')' stmt { For $3 $5 $7 $9 }
+  | while '(' expr ')' stmt { While $3 $5 }
+
+expr_opt:
+    {- empty -} { Noexpr }
+  | expr          { $1 }
+#+END_SRC
+
+The expression rule is also fairly straightforward, except the interaction of the power operator with pointer dereferencing. We also use the =%prec NEG= directive to force prefix operators to bind very as tightly as possible.[fn::Note that it's possible to write happy parsers without dictating precedence rules at all, but instead breaking up different precedence operators into separate rules, with rules concerning higher precedence operators coming later. However, this involves a lot of duplication, and some things like prefix negation are tricky to get right like that, so it's generally easier to use the precedence tables when they work. A common case where they lead to ambiguity, though, is when parsing function application by juxtaposition, like in haskell. For that, you either need to tokenize whitespace and use it as a high precedence operator, or construct special fallthrough rules.]
+
+#+BEGIN_SRC haskell
+expr:
+    int                    { Literal $1 }
+  | float                  { Fliteral $1 }
+  | char                   { CharLit $1 }
+  | string                 { StrLit (pack $1) }
+  | bool                   { BoolLit $1 }
+  | null                   { Null }
+  | id                     { Id (pack $1) }
+  | expr '+'  expr         { Binop  Add  $1 $3 }
+  | expr '-'  expr         { Binop  Sub  $1 $3 }
+  | expr '*'  expr         { Binop  Mult $1 $3 }
+  | expr '/'  expr         { Binop  Div  $1 $3 }
+  | expr '==' expr         { Binop  Equal $1 $3 }
+  | expr '!=' expr         { Binop  Neq  $1 $3 }
+  | expr '<'  expr         { Binop  Less $1 $3 }
+  | expr '<=' expr         { Binop  Leq  $1 $3 }
+  | expr '>'  expr         { Binop  Greater $1 $3 }
+  | expr '>=' expr         { Binop  Geq  $1 $3 }
+  | expr '&'  expr         { Binop  BitAnd  $1 $3 }
+  | expr '|'  expr         { Binop  BitOr   $1 $3 }
+  | expr '&&' expr         { Binop  And  $1 $3 }
+  | expr '||' expr         { Binop  Or   $1 $3 }
+  | expr '**'  expr        { Binop  Power $1 $3 }
+  | '-' expr %prec NEG     { Unop Neg $2 }
+  | '*' expr %prec NEG     { Deref $2 }
+  -- A hack to get around having the power operator
+  | '**' expr %prec NEG    { Deref (Deref $2) }
+  | '&' expr %prec NEG     { Addr $2 }
+  | '!' expr               { Unop Not  $2 }
+  | expr '=' expr          { Assign $1 $3 }
+  | id '(' actuals_opt ')' { Call (pack $1) $3 }
+  | '(' typ ')' expr %prec NEG { Cast $2 $4 }
+  | expr '.' expr          { Access $1 $3 }
+  | expr '->' expr         { Access (Deref $1) $3}
+  | sizeof '(' typ ')'     { Sizeof $3 }
+  | '(' expr ')'           { $2 }
+
+actuals_opt:
+    {- empty -} { [] }
+  | actuals_list  { reverse $1 }
+
+actuals_list:
+    expr                    { [$1] }
+  | actuals_list ',' expr { $3 : $1 }
+#+END_SRC
+
+Finally, the footer contains the =parseError= function as well as some utilities.
+
+#+BEGIN_SRC haskell
+{
+parseError _ = error "Unable to parse tokens"
+fst (a, _, _) = a
+snd (_, b, _) = b
+thd (_, _, c) = c
+}
+#+END_SRC
+
+Cabal automatically knows how to call alex and happy to generate the relevant haskell modules which will provide functions =alexScanTokens :: String -> [Lexeme]=[fn::I know I said we shouldn't use String, but alex doesn't support Text, only String and lazy ByteString, so I picked the semantically correct option over the performant one.] and =parse :: [Lexeme] -> Program=.
+
+(Full source of the happy parser [[https://github.com/jmorag/mcc/blob/master/src/Microc/Parser/Generator.y][here]].)
+** Megaparsec
+Now, we'll write the same scanner and parser using [[https://hackage.haskell.org/package/megaparsec][megaparsec]]. We could actually reuse the tokens generated by alex with megaparsec and skip scanning, but it's instructive to see how megaparsec handles the whole process (I also had the megaparsec version working long before I even considered using a parser generator). For further reading, I recommend the [[https://markkarpov.com/tutorial/megaparsec.html][official megaparsec tutorial]].
+
+For the scanner, we have our standard import boilerplate as well as the definition of our parser type as the vanilla =Parsec= monad with no custom state component consuming =Text=.
+
+#+BEGIN_SRC haskell
+module Microc.Scanner.Combinator where
+
+import           Data.Void
+import           Data.Char
+import           Text.Megaparsec
+import           Text.Megaparsec.Char
+import qualified Text.Megaparsec.Char.Lexer    as L
+import           Data.Text                      ( Text )
+import qualified Data.Text                     as T
+import           Control.Monad                  ( void )
+import           Data.String.Conversions
+
+type Parser = Parsec Void Text
+#+END_SRC
+
+We then define our "space consumer," which we use to create higher order functions to deal with lexemes and symbols so that they intelligently handle whitespace.
+
+#+BEGIN_SRC haskell
+sc :: Parser ()
+sc = L.space space1 lineCmnt blockCmnt
+ where
+  lineCmnt  = L.skipLineComment "//"
+  blockCmnt = L.skipBlockComment "/*" "*/"
+
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme sc
+
+symbol :: Text -> Parser Text
+symbol = L.symbol sc
+#+END_SRC
+
+Then, we create some convenience functions to handle paired delimiters and common symbols.
+
+#+BEGIN_SRC haskell
+parens :: Parser a -> Parser a
+parens = between (symbol "(") (symbol ")")
+
+braces :: Parser a -> Parser a
+braces = between (symbol "{") (symbol "}")
+
+dquotes :: Parser a -> Parser a
+dquotes = between (single '"') (single '"')
+
+squotes :: Parser a -> Parser a
+squotes = between (single '\'') (single '\'')
+
+semi :: Parser ()
+semi = void $ symbol ";"
+
+comma :: Parser ()
+comma = void $ symbol ","
+
+star :: Parser ()
+star = void $ symbol "*"
+#+END_SRC
+
+To handle reserved words, we attempt to parse a given string, not followed by anything except for whitespace. If we fail, we backtrack the parser so that it doesn't get stuck in the middle of a word.
+#+BEGIN_SRC haskell
+rword :: Text -> Parser ()
+rword w = (lexeme . try) (string w *> notFollowedBy alphaNumChar)
+
+rws :: [Text] -- list of reserved words
+rws =
+  [ "if"
+  , "then"
+  , "else"
+  , "while"
+  , "true"
+  , "false"
+  , "for"
+  , "int"
+  , "bool"
+  , "char"
+  , "float"
+  , "void"
+  , "return"
+  , "struct"
+  , "NULL"
+  , "sizeof"
+  ]
+#+END_SRC
+
+Like with alex, we take advantage of haskell's =read= function to parse strings and character literals.
+
+#+BEGIN_SRC haskell
+strlit :: Parser Text
+strlit = do
+  content <- dquotes $ takeWhileP Nothing (/= '"')
+  pure $ T.pack (read ('"' : cs content ++ "\""))
+
+charlit :: Parser Int
+charlit =
+  squotes $ (ord <$> satisfy (`notElem` ['\\', '\'']))
+        <|> (single '\\' >> int)
+#+END_SRC
+
+Identifiers are a little more cumbersome in megaparsec than the =$alpha [$alpha $digit \_]*= rule in alex because we have to also check that they aren't the same as any reserved words.
+
+#+BEGIN_SRC haskell
+identifier :: Parser Text
+identifier = (lexeme . try) (p >>= check)
+ where
+  p = fmap T.pack $ (:) <$> letterChar
+                        <*> many (alphaNumChar <|> single '_')
+  check x = if x `elem` rws
+    then fail $ "keyword " <> show x <> " cannot be an identifier"
+    else return x
+#+END_SRC
+
+Lexing =int='s and =float='s, however, is already implemented for us by the library, so we just wrap the definitions in our =lexeme= combinator.
+
+#+BEGIN_SRC haskell
+int :: Parser Int
+int = lexeme L.decimal
+
+float :: Parser Double
+float = lexeme L.float
+#+END_SRC
+
+(Full source for the megaparsec scanner [[https://github.com/jmorag/mcc/blob/master/src/Microc/Scanner/Combinator.hs][here]].)
+
+The parser begins similar to the scanner.
+#+BEGIN_SRC haskell
+module Microc.Parser.Combinator
+  ( programP
+  , runParser
+  , errorBundlePretty
+  )
+where
+
+import Microc.Ast
+import Microc.Scanner.Combinator
+import Text.Megaparsec
+import Control.Monad.Combinators.Expr
+import Control.Applicative (liftA2, liftA3)
+import Data.Either
+#+END_SRC
+
+To handle operator precedence, we construct a value of type =[[Operator Parser Expr]]= which we will later pass to =makeExprParser=. Ordering is from highest to lowest precedence, with operators in the same list having equal priority. Each constructor of the =Operator= type takes a function of type =Parser (Expr -> Expr -> Expr)= or =Parser (Expr -> Expr)= depending on if the operator is unary or binary and dispatches said parser appropriately for each operator.
+
+Some contortions are necessary to handle chained prefix operators like multiple pointer dereferences, double negation, and operators that are prefixes of operators, like =|= for bitwise or and =||= for logical or. Had we reused the tokens from alex, this would not be a problem.
+
+#+BEGIN_SRC haskell
+opTable :: [[Operator Parser Expr]]
+opTable =
+  [ [ InfixL $ Access <$ symbol "."
+    , InfixL $ (\lhs rhs -> Access (Deref lhs) rhs) <$ symbol "->"
+    ]
+  , [ unary (Unop Neg) "-"
+    , unary (Unop Not) "!"
+    , unary Deref      "*"
+    , unary Addr       "&"
+    ]
+  , [infixR Power "**"]
+  , [infixL Mult "*", infixL Div "/"]
+  , [infixL Add "+", infixL Sub "-"]
+  , [infixL Leq "<=", infixL Geq ">=", infixL Less "<", infixL Greater ">"]
+  , [infixL' Equal "==", infixL Neq "!="]
+  , [infixL' BitAnd "&"]
+  , [infixL' BitOr "|"]
+  , [infixL' And "&&"]
+  , [infixL' Or "||"]
+  , [InfixR $ Assign <$ symbol "="]
+  ]
+ where
+  -- Megaparsec doesn't support multiple prefix operators by default,
+  -- but we need this in order to parse things like double negatives,
+  -- nots, and dereferences
+  unary op sym = Prefix $ foldr1 (.) <$> some (op <$ symbol sym)
+  infixL op sym = InfixL $ Binop op <$ symbol sym
+  -- Primed infixL' is useful for operators which are prefixes of other operators
+  infixL' op sym = InfixL $ Binop op <$ operator sym
+  infixR op sym = InfixR $ Binop op <$ symbol sym
+  operator sym = lexeme $ try (symbol sym <* notFollowedBy opChar)
+  opChar = oneOf ("!#$%&*+./<=>?@\\^|-~" :: [Char])
+#+END_SRC
+
+We can now write the rest of our expression parser.
+#+BEGIN_SRC haskell
+termP :: Parser Expr
+termP = try (Cast <$> parens typeP <*> exprP)
+    <|> parens exprP
+    <|> Null <$ rword "NULL"
+    <|> try (Fliteral <$> float)
+    <|> Literal <$> int
+    <|> BoolLit <$> (True <$ rword "true" <|> False <$ rword "false")
+    <|> Sizeof <$> (rword "sizeof" *> parens typeP)
+    <|> try (Call <$> identifier <*> parens (exprP `sepBy` comma))
+    <|> CharLit <$> charlit
+    <|> StrLit <$> strlit
+    <|> Id <$> identifier
+
+exprP :: Parser Expr
+exprP = makeExprParser termP opTable
+
+exprMaybe :: Parser Expr
+exprMaybe = option Noexpr exprP
+#+END_SRC
+Unlike in our parser generator, we need to be very careful about the ordering or our alternatives and where to include the =try= combinator so that our parser doesn't end up in an invalid state or match on characters too eagerly.
+
+Struct, type, and variable declarations are all straightforward.
+#+BEGIN_SRC haskell
+structP :: Parser Struct
+structP = Struct <$> (rword "struct" *> identifier) <*> braces (many vdeclP) <* semi
+
+typeP :: Parser Type
+typeP = do
+  baseType <- TyInt    <$ rword "int"
+          <|> TyBool   <$ rword "bool"
+          <|> TyFloat  <$ rword "float"
+          <|> TyChar   <$ rword "char"
+          <|> TyVoid   <$ rword "void"
+          <|> TyStruct <$> (rword "struct" *> identifier)
+  foldr (const Pointer) baseType <$> many star
+
+vdeclP :: Parser Bind
+vdeclP = Bind <$> typeP <*> identifier <* semi
+#+END_SRC
+
+Statements and function definitions are very similar to what we wrote in happy. For dangling else's, we don't have to do anything particularly special, as megaparsec isn't of the class of parsers that check for ambiguities.
+#+BEGIN_SRC haskell
+statementP :: Parser Statement
+statementP = Expr <$> exprP <*  semi
+    <|> Return <$> (rword "return" *> exprMaybe <* semi)
+    <|> Block  <$> braces (many statementP)
+    <|> ifP
+    <|> forP
+    <|> whileP
+
+ifP :: Parser Statement
+ifP = liftA3 If (rword "if" *> parens exprP) statementP maybeElse
+  where maybeElse = option (Block []) (rword "else" *> statementP)
+
+forP :: Parser Statement
+forP = do
+  rword "for"
+  (e1, e2, e3) <- parens
+    $ liftA3 (,,) (exprMaybe <* semi) (exprP <* semi) exprMaybe
+  For e1 e2 e3 <$> statementP
+
+whileP :: Parser Statement
+whileP = liftA2 While (rword "while" *> parens exprP) statementP
+
+fdeclP :: Parser Function
+fdeclP = Function <$> typeP <*> identifier <*> formalsP
+    <*> (symbol "{" *> many vdeclP)
+    <*> (many statementP <* symbol "}")
+
+formalsP :: Parser [Bind]
+formalsP = parens $ formalP `sepBy` comma
+  where formalP = liftA2 Bind typeP identifier
+#+END_SRC
+
+Finally, a full program is potentially some whitespace followed by a list of structs and global variables followed by a list of functions and the end of the file.
+#+BEGIN_SRC haskell
+programP :: Parser Program
+programP = between sc eof $ do
+  structsOrGlobals <- many $ try (Left <$> structP) <|> (Right <$> try vdeclP)
+  let structs = lefts structsOrGlobals
+      globals = rights structsOrGlobals
+  Program structs globals <$> many fdeclP
+#+END_SRC
+
+(Full source of the megaparsec parser [[https://github.com/jmorag/mcc/blob/master/src/Microc/Parser/Combinator.hs][here]].)
+* Wiring everything together
+Now that we've written our parsers, presumably we'll want to run them on some actual source files. First, we'll create a =Microc.hs= file in =src/= that exports all of the Microc modules that we've written so far.
+
+#+BEGIN_SRC haskell
+module Microc
+  ( module X
+  )
+where
+
+import           Microc.Ast                    as X
+import           Microc.Scanner.Combinator     as X
+import           Microc.Parser.Combinator      as X
+import           Microc.Scanner.Generator      as X
+import           Microc.Parser.Generator       as X
+#+END_SRC
+
+In =app/Main.hs=, we'll set up an options parser using [[https://hackage.haskell.org/package/optparse-applicative][optparse-applicative]] so we can tell our executable to pretty print the parsed AST, the semantically checked AST, or the LLVM output, or compile the executable. The run option is just a convenience that will compile the executable, run it and then cleanup intermediate files.
+
+#+BEGIN_SRC haskell
+module Main where
+
+-- Microc parser conflicts with Options.Applicative parser
+import           Microc                  hiding ( Parser )
+
+import           Options.Applicative
+import           LLVM.Pretty
+import           Data.String.Conversions
+import qualified Data.Text                     as T
+import qualified Data.Text.IO                  as T
+
+import           Text.Pretty.Simple
+import           Data.Text.Prettyprint.Doc
+import           Data.Text.Prettyprint.Doc.Render.Text
+
+data Action = Ast
+             -- TODO
+             | Sast | LLVM | Compile FilePath | Run
+
+data ParserType = Combinator -- ^ megaparsec
+                | Generator -- ^ alex/happy
+data Options = Options { action :: Action
+                       , infile :: FilePath
+                       , parser :: ParserType }
+#+END_SRC
+
+We want the behavior of our executable to be:
+#+BEGIN_SRC bash
+mcc --ast <file> # prints the ast of the file
+mcc --ast --generator <file> # parses using alex/happy and prints the ast
+mcc --sast <file> # prints the semantically checked ast of the file
+mcc --llvm <file> # prints the generated llvm bytecode
+mcc --compile <file> -o a.out # produces an executable a.out
+mcc <file> # compiles the file and prints the output from running it
+# etc.
+#+END_SRC
+
+This can be mostly accomplished using the =flag'= combinator which allows the use of =--options= as toggles.
+
+#+BEGIN_SRC haskell
+actionP :: Parser Action
+actionP =
+  flag' Ast (long "ast" <> short 'a' <> help "Pretty print the ast")
+    <|> flag' Sast (long "sast" <> short 's' <> help "Pretty print the sast")
+    <|> flag'
+          LLVM
+          (long "llvm" <> short 'l' <> help "Pretty print the generated llvm")
+    <|> flag' Compile
+              (long "compile" <> short 'c' <> help "Compile to an executable")
+    <*> strOption (short 'o' <> value "a.out" <> metavar "FILE")
+  -- running the file to see the expected output is default
+    <|> pure Run
+
+parserP :: Parser ParserType
+parserP =
+  flag'
+      Combinator
+      (long "combinator" <> help "Use the megaparsec parser implementation (default).")
+    <|> flag'
+          Generator
+          (long "generator" <> short 'g' <> help "Use alex and happy to parse.")
+    <|> pure Combinator -- default to megaparsec
+
+optionsP :: Parser Options
+optionsP =
+  Options
+    <$> actionP
+    <*> strArgument (help "Source file" <> metavar "FILE")
+    <*> parserP
+#+END_SRC
+
+The main logic lives in =runOpts :: Options -> IO()= which is called by =main= in conjunction with the standard invocation of =execParser= from =optparse-applicative=.
+
+#+BEGIN_SRC haskell
+main :: IO ()
+main = runOpts =<< execParser (optionsP `withInfo` infoString)
+ where
+  withInfo opts desc = info (helper <*> opts) $ progDesc desc
+  infoString
+    = "Run the mcc compiler on the given file. \
+       \Passing no flags will compile the file, execute it, and print the output."
+
+runOpts :: Options -> IO ()
+runOpts (Options action infile ptype) = do
+  program <- T.readFile infile
+  let parseTree = case ptype of
+        Combinator -> runParser programP infile program
+        Generator  -> Right $ parse . alexScanTokens $ T.unpack program
+  case parseTree of
+    Left  err -> putStrLn $ errorBundlePretty err
+    Right ast -> case action of
+      Ast -> putDoc $ pretty ast <> "\n"
+      _   -> error "Not yet implemented"
+#+END_SRC
+
+(Full source for =app/Main.hs= [[https://github.com/jmorag/mcc/blob/master/app/Main.hs][here]]. Note that it is for the complete compiler including the passes that we haven't yet discussed.)
+
+* Testing the compiler
+For our compiler, we will primarily test with /golden tests/ provided by [[https://hackage.haskell.org/package/tasty-golden][tasty-golden]]. Golden tests are essentially files containing the expected outputs of running various commands. In our case, we will have two directories in tests, =tests/pass= for programs that are expected to run successfully and produce output and =tests/fail= for programs with semantic errors that we hope to emit moderately helpful error messages for. Each directory contains pairs of files =cool_program.mc= and =cool_program.golden= with the source and expected output of running =mcc cool_program.mc=, respectively.
+
+However, since we have yet to write the semantic analyzer or code generation passes, we can't test them yet. All we can test at this stage is that our combinator and generator parsers produce identical ASTs when successful and that neither parser succeeds where the other one fails. We won't attempt to test whether they return the same error messages on failure because rewriting the parser generator to emit real error messages is very time consuming and would require an overhaul of its entire structure. Instead, we resort to lifting the parser generator functions into =IO= where we can catch exceptions (yes, haskell does allow this, although it's rarely done).
+
+We construct a test tree by going through the =pass= directory and running both parsers on each file.
+
+#+BEGIN_SRC haskell
+module Main where
+
+import           Test.Tasty                     ( defaultMain
+                                                , TestTree
+                                                , testGroup
+                                                )
+import           Test.Tasty.Golden
+import           Test.Tasty.HUnit
+import           System.FilePath                ( takeBaseName
+                                                , replaceExtension
+                                                )
+
+import           Microc
+
+import           Data.String.Conversions
+import qualified Data.Text.IO                  as T
+import           Data.Text                      ( Text )
+import           Data.Text.Prettyprint.Doc
+import           Data.Text.Prettyprint.Doc.Render.Text
+import           Control.Monad
+import           Control.Exception
+
+parsing :: IO TestTree
+parsing = do
+  files <- concat <$> mapM (findByExtension [".mc"])
+                           ["tests/pass", "tests/fail"]
+  fmap (testGroup "parsing") $ forM files $ \file -> do
+    input      <- T.readFile file
+    combinator <- pure $ runParser programP file input
+    generator  <-
+      try . evaluate . parse . alexScanTokens $ cs input :: IO
+        (Either IOError Program)
+    pure . testCase file $ case (combinator, generator) of
+      (Right ast, Right ast') -> assertEqual file ast ast'
+      (Left  _  , Left _    ) -> pure ()
+      _                       -> assertFailure file
+
+main :: IO ()
+main = defaultMain =<< parsing
+#+END_SRC 
+
+Once we've implemented more of the compiler, we'll extend the test runner with more test groups. Using Tasty's testGroup functionality, we can restrict our test run to only some of the tests by running them with =nix-shell --pure --run "cabal new-run testall -- --pattern 'parsing'"= to only run the 'parsing' tests, for example.
+
+(Full source for =tests/Testall.hs= [[https://github.com/jmorag/mcc/blob/master/tests/Testall.hs][here]]. Same as with =Main=, contains material to be covered in future posts.)
+
+* Addendum: My informal comparison of parser combinators vs. generators
+| Combinators                                                                                           | Generators                                                                    |
+|-------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------|
+| Easier to write - vanilla Haskell                                                                     | Custom, weird syntax that no one ever remembers offhand                       |
+| Decent default error messages                                                                         | Good parse errors are possible, but they take significant work                |
+| Lots of tutorials and blog posts                                                                      | Scarce documentation aside from the official manuals                          |
+| Works on String, Strict/Lazy ByteString, and Text                                                     | Only String and Lazy ByteString                                               |
+| Grammar sensitive to ordering of alternatives - need to be careful about exploding runtime with =try= | Robust to ordering of alternatives - automatically uses longest match         |
+| No way to tell if grammar is ambiguous                                                                | You'll get a lovely Shift-Reduce conflict if your grammar has any ambiguities |
+| Used by [[https://github.com/haskell-nix/hnix/][hnix]], [[https://www.idris-lang.org/][Idris]]                                                                                   | Used by GHC                                                                   |
+
+Performance wise, it's unclear to me which one is faster, as I haven't benchmarked anything. My guess is that megaparsec can run very quickly with careful optimization and minimizing the use of =try= whereas alex/happy is pretty fast by default. In the current state of the codebase, it would be very unfair to compare the two, as megaparsec reads =Text= whereas alex reads =String=. A fair comparison would have to use =ByteString=.
+
+Anyway, thanks for reading until the end! Stay tuned for part 2, semantic analysis.
