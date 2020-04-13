@@ -86,4 +86,4 @@ Different languages treat these steps differently. Lisp's syntax resembles an AS
 
 [[/images/compiler-pipeline.png]]
 
-Now that we've laid out the preliminaries, we can actually start coding in part 1!
+Now that we've laid out the preliminaries, we can actually start coding in [[/posts/mcc1][part 1]]!
