@@ -313,7 +313,7 @@ Happy also requires us to re-declare all of the token types from our lexer gener
   '->'   { LArrow }
 #+END_SRC
 
-Next, we have the precedence rules for our operators going from lowest to highest. We include a dummy =NOELSE= token to solve ambiguities arising from a possible [[https://en.wikipedia.org/wiki/Dangling_else][dangline else]].
+Next, we have the precedence rules for our operators going from lowest to highest. We include a dummy =NOELSE= token to solve ambiguities arising from a possible [[https://en.wikipedia.org/wiki/Dangling_else][dangling else]].
 
 #+BEGIN_SRC haskell
 %nonassoc NOELSE
