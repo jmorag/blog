@@ -1,4 +1,4 @@
-#+TITLE: Micro C, Part 1
+#+TITLE: Micro C, Part 1: Parsing
 #+DATE: 2020-04-10
 #+TAGS[]: llvm, haskell
 #+DRAFT: false
@@ -933,4 +933,4 @@ Once we've implemented more of the compiler, we'll extend the test runner with m
 
 Performance wise, it's unclear to me which one is faster, as I haven't benchmarked anything. My guess is that megaparsec can run very quickly with careful optimization and minimizing the use of =try= whereas alex/happy is pretty fast by default. In the current state of the codebase, it would be very unfair to compare the two, as megaparsec reads =Text= whereas alex reads =String=. A fair comparison would have to use =ByteString=.
 
-Anyway, thanks for reading until the end! Stay tuned for part 2, semantic analysis.
+Anyway, thanks for reading until the end! Stay tuned for [[/posts/mcc2][part 2]], semantic analysis.

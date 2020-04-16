@@ -1,9 +1,9 @@
-#+TITLE: Micro C, Part 2
+#+TITLE: Micro C, Part 2: Semantic Analysis
 #+DATE: 2020-04-15
 #+TAGS[]: llvm, haskell
 #+DRAFT: true
 
-Having written the parser for our C dialiect in [[posts/mcc1][part 1]], we now proceed to the semantic analysis pass. Here, our goal is to catch as many errors as possible before going on to code generation. In particular, we will be somewhat stricter than real C compilers and disallow implicit conversions because they are both annoying to implement and lead to subtle bugs. Don't worry, though, we can still do whatever pointer casting shenanigans we want to, just as long as we do them explicitly.
+Having written the parser for our C dialiect in [[/posts/mcc1][part 1]], we now proceed to the semantic analysis pass. Here, our goal is to catch as many errors as possible before going on to code generation. In particular, we will be somewhat stricter than real C compilers and disallow implicit conversions because they are both annoying to implement and lead to subtle bugs. Don't worry, though, we can still do whatever pointer casting shenanigans we want to, just as long as we do them explicitly.
 
 * The Semantically checked Abstract Syntax Tree (SAST)
 To ensure that our semantic analysis doesn't leave any part of the AST unchecked, we define a new type, the SAST, that captures as much type checking information as possible, essentially duplicating each node of the AST and adding a type to it. In the [[http://blog.ezyang.com/2013/05/the-ast-typing-problem/][grand scheme of solutions to the problem of adding information to the AST]], this is the most "low-tech," but it works quite well for our purposes. 
@@ -217,7 +217,8 @@ For variables, we look for matching local variables, then formal parameters of t
 #+BEGIN_SRC haskell
   Id s       -> do
     vars <- gets vars
-    let foundVars = map (\kind -> M.lookup (s, kind) vars) [Local, Formal, Global]
+    let foundVars = map (\kind -> M.lookup (s, kind) vars)
+                        [Local, Formal, Global]
     case join $ find isJust foundVars of
       Nothing -> throwError $ UndefinedSymbol s Var expr
       Just ty -> pure (ty, LVal $ SId s)
@@ -286,8 +287,8 @@ Subtraction is even more liberal than addition, as you can subtract pointers of 
                      TypeError [Pointer t'] (Pointer t) (Expr expr)
             (TyInt  , TyInt  ) -> pure (TyInt, sexpr)
             (TyFloat, TyFloat) -> pure (TyFloat, sexpr)
-            _                  -> throwError
-              $ TypeError [Pointer TyVoid, TyInt, TyFloat] t1 (Expr expr)
+            _ -> throwError $ TypeError
+              [Pointer TyVoid, TyInt, TyFloat] t1 (Expr expr)
 #+END_SRC
 
 Most of the other mathematical operators are much simpler to check, as they just require that both of their operands have the same type.[fn:3]
@@ -306,11 +307,13 @@ Our =**= operator will work for =float ** float=, =float ** int=, and =int ** in
 
 #+BEGIN_SRC haskell
       Power  -> case (t1, t2) of
-        (TyFloat, TyFloat) -> pure (TyFloat, SCall "llvm.pow" [lhs', rhs'])
-        (TyFloat, TyInt  ) -> pure (TyFloat, SCall "llvm.powi" [lhs', rhs'])
+        (TyFloat, TyFloat) ->
+          pure (TyFloat, SCall "llvm.pow" [lhs', rhs'])
+        (TyFloat, TyInt  ) -> 
+          pure (TyFloat, SCall "llvm.powi" [lhs', rhs'])
         -- Implement this case directly in llvm
         (TyInt  , TyInt  ) -> pure (TyInt, SBinop Power lhs' rhs')
-        _                  -> throwError $ TypeError [TyFloat, TyInt] t1 (Expr expr)
+        _ -> throwError $ TypeError [TyFloat, TyInt] t1 (Expr expr)
 #+END_SRC
 
 The remaining binary operators are all relational. When comparing the null pointer to another pointer, we cast it to the type of the other pointer (but this is the only time that we do this). All other relational operators are numeric.
@@ -337,7 +340,8 @@ Unary operations, by contrast with binary operators, are not complicated.
           $ throwError (TypeError [TyInt, TyFloat] ty (Expr expr))
         pure (ty, SUnop Neg e')
       Not -> do
-        unless (ty == TyBool) $ throwError $ TypeError [TyBool] ty (Expr expr)
+        unless (ty == TyBool) $ throwError $
+          TypeError [TyBool] ty (Expr expr)
         pure (ty, SUnop Not e')
 #+END_SRC
 
@@ -353,8 +357,8 @@ Taking the address of an expression is valid only on =LVal='s and dereferencing 
     (ty, e') <- checkExpr e
     case ty of
       Pointer t -> pure (t, LVal $ SDeref (ty, e'))
-      _         -> throwError
-        $ TypeError [Pointer TyVoid, Pointer TyInt, Pointer TyFloat] ty (Expr expr)
+      _         -> throwError $ TypeError
+        [Pointer TyVoid, Pointer TyInt, Pointer TyFloat] ty (Expr expr)
 #+END_SRC
 
 Next, we handle function calls. =printf= is a special case, as it takes an arbitrary number of arguments. We don't really make any effort to check that the format string matches the rest of the arguments. All we check is that all of the arguments to =printf= are well-formed expressions.
@@ -380,7 +384,8 @@ For user-defined functions and the other built-ins, we look up the name of the f
         -- Check that the correct number of arguments was provided
         let nFormals = length (formals f)
             nActuals = length es
-        unless (nFormals == nActuals) $ throwError (ArgError nFormals nActuals expr)
+        unless (nFormals == nActuals) $ throwError
+          (ArgError nFormals nActuals expr)
         -- Check that types of arguments match
         forM_ (zip (map fst es') (map bindType (formals f)))
           $ \(callSite, defSite) ->
@@ -425,7 +430,8 @@ Then, we check that the type of the thing being accessed is indeed a struct and 
       TyStruct name' -> do
         ss <- gets structs
         case find (\(Struct n _) -> n == name') ss of
-          Nothing -> throwError (TypeError [TyStruct "a_struct"] t (Expr expr))
+          Nothing -> throwError
+            (TypeError [TyStruct "a_struct"] t (Expr expr))
           Just s  -> pure s
       _ -> throwError (TypeError [TyStruct "a_struct"] t (Expr expr))
 #+END_SRC
@@ -502,14 +508,12 @@ for (init; cond; inc) {
 #+END_SRC
 to
 #+BEGIN_SRC c
-{
 init;
 if (cond) {
   do {
     action;
     inc;
   } while (cond)
-}
 }
 #+END_SRC
 
@@ -533,7 +537,8 @@ For returns, check that the expression type matches the declared return type.
 #+BEGIN_SRC haskell
   Return expr -> do
     e@(ty, _) <- checkExpr expr
-    unless (ty == typ func) $ throwError $ TypeError [typ func] ty stmt
+    unless (ty == typ func) $ throwError $ 
+      TypeError [typ func] ty stmt
     pure $ SReturn e
 #+END_SRC
 
@@ -570,7 +575,8 @@ checkFunction :: Function -> Semant SFunction
 checkFunction func = do
   -- add the fname to the table and check for conflicts
   funcs <- gets funcs
-  unless (M.notMember (name func) funcs) $ throwError $ Redeclaration (name func)
+  unless (M.notMember (name func) funcs) $ throwError $
+    Redeclaration (name func)
   -- add this func to symbol table
   modify $ \env -> env { funcs = M.insert (name func) func funcs }
 
@@ -646,7 +652,8 @@ Finally, we can write =checkProgram=, which will unwrap the =Semant= monad, inse
 
 #+BEGIN_SRC haskell
 checkProgram :: Program -> Either SemantError SProgram
-checkProgram program = evalState (runExceptT (checkProgram' program)) baseEnv
+checkProgram program =
+  evalState (runExceptT (checkProgram' program)) baseEnv
  where
   baseEnv = Env { structs = [], vars = M.empty, funcs = builtIns }
 
