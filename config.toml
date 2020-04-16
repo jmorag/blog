@@ -2,7 +2,7 @@ baseURL = "https://blog.josephmorag.com/"
 languageCode = "en-us"
 Title = "Joseph Morag"
 enableRobotsTXT = true
-paginate = 4
+paginate = 8
 summaryLength = 50
 
 theme = "hugo-primer"
