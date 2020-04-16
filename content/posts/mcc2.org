@@ -550,7 +550,7 @@ Blocks are interesting. It's technically allowed to write code with arbitrary ne
   }
 }
 #+END_SRC
-However, this makes some types of analyses harder, so we flatten such blocks before proceeding with checking. We also want to ensure that dead code, i.e. code after a return gets flagged as an error. Otherwise, we simple recurse into the block as usual.
+However, this makes some types of analyses harder, so we flatten such blocks before proceeding with checking. We also want to ensure that dead code, i.e. code after a return gets flagged as an error. Otherwise, we simply recurse into the block as usual.
 
 #+BEGIN_SRC haskell
   Block sl -> do
