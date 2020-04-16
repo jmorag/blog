@@ -1,7 +1,7 @@
 #+TITLE: Micro C, Part 2: Semantic Analysis
 #+DATE: 2020-04-15
 #+TAGS[]: llvm, haskell
-#+DRAFT: true
+#+DRAFT: false
 
 Having written the parser for our C dialiect in [[/posts/mcc1][part 1]], we now proceed to the semantic analysis pass. Here, our goal is to catch as many errors as possible before going on to code generation. In particular, we will be somewhat stricter than real C compilers and disallow implicit conversions because they are both annoying to implement and lead to subtle bugs. Don't worry, though, we can still do whatever pointer casting shenanigans we want to, just as long as we do them explicitly.
 
@@ -670,7 +670,70 @@ checkProgram program =
 
 (Full source for =Semant.hs= [[https://github.com/jmorag/mcc/blob/master/src/Microc/Semant.hs][here]].)
 
-All that's left is code generation, which we'll tackle in part 3!
+* More wiring
+In [[/posts/mcc1][part 1]], we stubbed out =Main.hs=. Now that semantic checking works (hopefully), we'll go back to =runOpts= and add a case to pretty print the =Sast=. As this is mainly just for debugging, we won't bother hand writing a pretty-printer for the =Sast=. Instead, we'll use [[https://hackage.haskell.org/package/pretty-simple][pretty-simple]] to get nice output for the auto-derived =Show= instance.
+
+#+BEGIN_SRC haskell
+runOpts :: Options -> IO ()
+runOpts (Options action infile ptype) = do
+  program <- T.readFile infile
+  let parseTree = case ptype of
+        Combinator -> runParser programP infile program
+        Generator  -> Right $ parse . alexScanTokens $ T.unpack program
+  case parseTree of
+    Left  err -> putStrLn $ errorBundlePretty err
+    Right ast -> case action of
+      Ast -> putDoc $ pretty ast <> "\n"
+      _   -> case checkProgram ast of
+        Left err -> putDoc $ pretty err <> "\n"
+        Right sast -> case action of
+          Sast -> pPrint sast
+          _ -> error "Haven't written codegen yet"
+#+END_SRC
+
+* Testing
+Now that we're done with the parts of the compiler that deal with rejecting invalid programs, we should test that functionality. We'll construct a new =TestTree= that looks in the =tests/fail= directory and asserts that running the compiler on each ".mc" file produces the same error message as specified by the corresponding ".golden" file.
+
+#+BEGIN_SRC haskell
+failing :: IO TestTree
+failing = do
+  mcFiles <- findByExtension [".mc"] "tests/fail"
+  return $ testGroup
+    "fail"
+    [ goldenVsString (takeBaseName mcFile) outfile (cs <$> runFile mcFile)
+    | mcFile <- mcFiles
+    , let outfile = replaceExtension mcFile ".golden"
+    ]
+
+-- | Given a microc file, attempt to compile and execute it and read the
+-- results to be compared with what should be the correct output
+runFile :: FilePath -> IO Text
+runFile infile = do
+  program <- T.readFile infile
+  let parseTree = runParser programP (cs infile) program
+  case parseTree of
+    Left  e   -> return . cs $ errorBundlePretty e
+    Right ast -> case checkProgram ast of
+      Left err -> return . renderStrict $
+        layoutPretty defaultLayoutOptions (pretty err)
+      Right sast -> error "Codegen not yet implemented"
+#+END_SRC
+
+We'll also refactor =main= to account for these new tests.
+#+BEGIN_SRC haskell
+main :: IO ()
+main = defaultMain =<< goldenTests
+
+-- | All of the test cases
+-- General structure taken from
+-- https://ro-che.info/articles/2017-12-04-golden-tests
+goldenTests :: IO TestTree
+goldenTests = testGroup "all" <$> sequence [failing, parsing]
+#+END_SRC
+
+Now, if we want to run only the parsing tests, or only the semantic tests, we can, inside =nix-shell=, run =cabal run testall -- -p "parsing"= or =cabal run testall -- -p "fail"= . Instead of specifying what error messages we expect to output ahead of time in each golden file, the first time we run the tests, we'll use the [[https://ro-che.info/articles/2017-12-04-golden-tests][workflow]] proposed by the =Tasty= author, Roman Cheplyaka, running =cabal run testall -- --accept=, and commit the generated golden files after manually inspecting them. This is where using golden tests really shines, as writing out all the error messages beforehand in a file while keeping the correct formatting is too horrible to contemplate.
+
+Finally, the semantic checker is done! All that's left is code generation, which we'll tackle in part 3. Thanks to everyone for reading so far, and especially to Théophile Choutri, who's been sponsoring this series and has set up a [[https://theophile.choutri.eu/microfund.html][microfund]] for it.
 
 [fn:1] As of April 2020, GHC does this, although there's a proposal to [[https://github.com/alpmestan/ghc-proposals/blob/alp/error-values/proposals/0000-error-values-proposal.rst#errors-as-values][change to a different approach]].
 [fn:2] =printbig= originally appeared in the [[https://github.com/cwabbott0/microc-llvm/blob/master/printbig.c][ocaml microc compiler]] that this is based on.
