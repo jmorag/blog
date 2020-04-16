@@ -1,7 +1,7 @@
 #+TITLE: Micro C, Part 2: Semantic Analysis
 #+DATE: 2020-04-15
 #+TAGS[]: llvm, haskell
-#+DRAFT: false
+#+DRAFT: true
 
 Having written the parser for our C dialiect in [[/posts/mcc1][part 1]], we now proceed to the semantic analysis pass. Here, our goal is to catch as many errors as possible before going on to code generation. In particular, we will be somewhat stricter than real C compilers and disallow implicit conversions because they are both annoying to implement and lead to subtle bugs. Don't worry, though, we can still do whatever pointer casting shenanigans we want to, just as long as we do them explicitly.
 
