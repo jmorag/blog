@@ -19,6 +19,3 @@
 [submodule "themes/hugo-primer"]
 	path = themes/hugo-primer
 	url = https://github.com/qqhann/hugo-primer
-[submodule "themes/solar-theme-hugo"]
-	path = themes/solar-theme-hugo
-	url = https://github.com/bake/solar-theme-hugo
