@@ -5,18 +5,18 @@ enableRobotsTXT = true
 paginate = 4
 summaryLength = 50
 
-theme = "hugo-theme-noteworthy"
+theme = "hugo-primer"
 # available themes:
   # contrast-hugo - math works, title "Joseph Morag" is duplicated, no youtube or github icons
-  # er - title box in the corner a bit weird but everything else works fine
+  # er - title box in the corner a bit weird, math broken
   # hugo-dusk - math broken, no next/prev links on posts
   # hugo-kiera - math broken, links a shitty color, otherwise good
   # hugo-primer - need to figure out TOC, about shows up in posts
   # hugo-theme-noteworthy - math wonky looking but works, no next/prev
   # Mainroad - no youtube/gh or next/prev, Lauren doesn't like it
-  # solar-theme-hugo - math broken, no next/prev, about shows up in posts
 
-googleAnalytics = "" 
+googleAnalytics = ""
+copyright = "&copy;Joseph Morag 2020"
 
 [taxonomies]
   tag = "tags"
