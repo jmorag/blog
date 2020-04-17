@@ -308,9 +308,9 @@ Our =**= operator will work for =float ** float=, =float ** int=, and =int ** in
 #+BEGIN_SRC haskell
       Power  -> case (t1, t2) of
         (TyFloat, TyFloat) ->
-          pure (TyFloat, SCall "llvm.pow" [lhs', rhs'])
+          pure (TyFloat, SCall "llvm.pow.f64" [lhs', rhs'])
         (TyFloat, TyInt  ) -> 
-          pure (TyFloat, SCall "llvm.powi" [lhs', rhs'])
+          pure (TyFloat, SCall "llvm.powi.i32" [lhs', rhs'])
         -- Implement this case directly in llvm
         (TyInt  , TyInt  ) -> pure (TyInt, SBinop Power lhs' rhs')
         _ -> throwError $ TypeError [TyFloat, TyInt] t1 (Expr expr)
@@ -733,7 +733,7 @@ goldenTests = testGroup "all" <$> sequence [failing, parsing]
 
 Now, if we want to run only the parsing tests, or only the semantic tests, we can, inside =nix-shell=, run =cabal run testall -- -p "parsing"= or =cabal run testall -- -p "fail"= . Instead of specifying what error messages we expect to output ahead of time in each golden file, the first time we run the tests, we'll use the [[https://ro-che.info/articles/2017-12-04-golden-tests][workflow]] proposed by the =Tasty= author, Roman Cheplyaka, running =cabal run testall -- --accept=, and commit the generated golden files after manually inspecting them. This is where using golden tests really shines, as writing out all the error messages beforehand in a file while keeping the correct formatting is too horrible to contemplate.
 
-Finally, the semantic checker is done! All that's left is code generation, which we'll tackle in part 3. Thanks to everyone for reading so far, and especially to Théophile Choutri, who's been sponsoring this series and has set up a [[https://theophile.choutri.eu/microfund.html][microfund]] for it.
+Finally, the semantic checker is done! All that's left is code generation, which we'll tackle in [[/posts/mcc3][part 3]]. Thanks to everyone for reading so far, and especially to Théophile Choutri, who's been sponsoring this series and has set up a [[https://theophile.choutri.eu/microfund.html][microfund]] for it.
 
 [fn:1] As of April 2020, GHC does this, although there's a proposal to [[https://github.com/alpmestan/ghc-proposals/blob/alp/error-values/proposals/0000-error-values-proposal.rst#errors-as-values][change to a different approach]].
 [fn:2] =printbig= originally appeared in the [[https://github.com/cwabbott0/microc-llvm/blob/master/printbig.c][ocaml microc compiler]] that this is based on.
