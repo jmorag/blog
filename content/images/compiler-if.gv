@@ -1,0 +1,6 @@
+digraph block {
+    if -> then;
+    if -> else;
+    then -> merge;
+    else -> merge;
+}

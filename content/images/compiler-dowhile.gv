@@ -1,0 +1,5 @@
+digraph block {
+    dowhile -> cond;
+    cond -> dowhile;
+    cond -> merge;
+}
