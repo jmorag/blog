@@ -47,7 +47,7 @@ copyright = "&copy;Joseph Morag 2020"
   # linkedin = "Your LinkedIn username"
 
 [[menu.main]]
-    name = "Blog"
+    name = "Posts"
     url = "/posts"
     weight = 1
 
