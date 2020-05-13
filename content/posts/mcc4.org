@@ -1,0 +1,241 @@
+#+TITLE: Micro C, Part 4: Integrating the LLVM FFI
+#+DATE: 2020-05-13
+#+TAGS[]: llvm, haskell
+#+DRAFT: false
+
+In our [[/posts/mcc3][last post]], we completed the backend stage of the compiler by emitting llvm assembly using [[https://hackage.haskell.org/package/llvm-hs-pure][llvm-hs-pure]] and [[https://hackage.haskell.org/package/llvm-hs-pretty][llvm-hs-pretty]] and then calling =clang= on the file output. Here, we'll get a taste of how to use the ffi bindings in [[https://hackage.haskell.org/package/llvm-hs][llvm-hs]] to do the same thing and also to perform stricter checks on our generated llvm code.
+
+* Dependencies
+From the cabal end of things, this is easy. We just add
+#+BEGIN_SRC yaml
+=- llvm-hs >= 9 && < 10
+#+END_SRC
+to our package.yaml and call it a day. With nix, things are a little trickier. At the time of this writing, both llvm-hs and llvm-hs-pretty are marked as =broken= in nixpkgs, which just means that we have to do a little fussing to get them to compile correctly under nix. Without further ado, here is the entirety of the =default.nix= in our project root.
+
+#+BEGIN_SRC nix
+let
+  inherit (import <nixpkgs> { }) fetchFromGitHub;
+  nixpkgs = fetchFromGitHub {
+    name = "nixos-unstable-2020-03-17";
+    owner = "nixos";
+    repo = "nixpkgs";
+    rev = "a2e06fc3423c4be53181b15c28dfbe0bcf67dd73";
+    sha256 = "0bjx4iq6nyhj47q5zkqsbfgng445xwprrslj1xrv56142jn8n5r9";
+  };
+  compilerVersion = "ghc883";
+  config = {
+    packageOverrides = pkgs: rec {
+      llvm_9 = (pkgs.llvm_9.override { debugVersion = true; }).overrideAttrs
+        (_: { doCheck = false; });
+      haskell = pkgs.haskell // {
+        packages = pkgs.haskell.packages // {
+          "${compilerVersion}" =
+            pkgs.haskell.packages."${compilerVersion}".override {
+              overrides = self: super: {
+                llvm-hs-pretty =
+                  pkgs.haskell.lib.dontCheck super.llvm-hs-pretty;
+                llvm-hs = pkgs.haskell.lib.dontCheck
+                  (super.callHackage "llvm-hs" "9.0.1" {
+                    llvm-config = llvm_9;
+                  });
+              };
+            };
+        };
+      };
+    };
+    allowBroken = true;
+  };
+  compiler = pkgs.haskell.packages."${compilerVersion}";
+  pkgs = import nixpkgs { inherit config; };
+  pkg = compiler.developPackage {
+    root = ./.;
+    source-overrides = { };
+    modifier = drv:
+      pkgs.haskell.lib.addBuildTools drv
+      (with pkgs.haskellPackages; [ cabal-install alex happy pkgs.clang_9 ]);
+  };
+in pkg
+#+END_SRC
+
+The world can always use more nix tutorials, so we'll go through this carefully.[fn::Disclaimer: I'm nowhere near as confident about nix as I am about Haskell. I know that the nix code below works, insofar as it lets =mcc= build correctly, but some of my explanations might be off, in which case I'll gladly accept any corrections or improvements.]
+Nix's =let ... in= construct serves the exact same purpose as Haskell's. First, we import the =fetchFromGithub= function from whatever version of the nixpkgs channel is specified in =NIX_PATH=.
+
+#+BEGIN_SRC nix
+let
+  inherit (import <nixpkgs> { }) fetchFromGitHub;
+#+END_SRC
+We then use =fetchFromGithub= to pin a particular version of nixpkgs with which we know that everything builds correctly. This saves us from disaster at the hands of an errant =nix-channel --update=.
+
+#+BEGIN_SRC nix
+  nixpkgs = fetchFromGitHub {
+    name = "nixos-unstable-2020-03-17";
+    owner = "nixos";
+    repo = "nixpkgs";
+    rev = "a2e06fc3423c4be53181b15c28dfbe0bcf67dd73";
+    sha256 = "0bjx4iq6nyhj47q5zkqsbfgng445xwprrslj1xrv56142jn8n5r9";
+  };
+#+END_SRC
+
+We specify the ghc version we're using at =8.8.3=.
+#+BEGIN_SRC nix
+  compilerVersion = "ghc883";
+#+END_SRC
+
+Now, we specify the =config= we'll be passing to our import of nixpkgs, which will specify the package overrides that we need and force nix to accept packages marked as broken. =packageOverrides= is a function that takes a package set, =pkgs=, and returns a set of overridden attributes. We build llvm_9 in debug mode but without running tests because they take forever.
+#+BEGIN_SRC nix
+  config = {
+    allowBroken = true;
+    packageOverrides = pkgs: rec {
+      llvm_9 = (pkgs.llvm_9.override { debugVersion = true; }).overrideAttrs
+        (_: { doCheck = false; });
+#+END_SRC
+We then override =llvm-hs-pretty= in our haskell package set to build without tests because they are what cause the breakage and =llvm-hs= to use our overridden version of llvm so that the versions match up.
+#+BEGIN_SRC nix
+      haskell = pkgs.haskell // {
+        packages = pkgs.haskell.packages // {
+          "${compilerVersion}" =
+            pkgs.haskell.packages."${compilerVersion}".override {
+              overrides = self: super: {
+                llvm-hs-pretty =
+                  pkgs.haskell.lib.dontCheck super.llvm-hs-pretty;
+                llvm-hs = pkgs.haskell.lib.dontCheck
+                  (super.callHackage "llvm-hs" "9.0.1" {
+                    llvm-config = llvm_9;
+                  });
+              };
+            };
+        };
+      };
+    };
+  };
+#+END_SRC
+Now, we can use this =config= to define a package set formed with the pinned source and our overrides.
+#+BEGIN_SRC nix
+  pkgs = import nixpkgs { inherit config; };
+#+END_SRC
+
+We then provision a version of ghc in our environment derived from this package set.
+#+BEGIN_SRC nix
+  compiler = pkgs.haskell.packages."${compilerVersion}";
+#+END_SRC
+
+The rest of our nix file follows the structure of section 15.9.4.2 of the [[https://nixos.org/nixpkgs/manual/#miscellaneous-topics][nix manual]], specifying the dependency on alex, happy, and clang in the =buildTools= attribute of =compiler.developPackage=.
+#+BEGIN_SRC nix
+  pkg = compiler.developPackage {
+    root = ./.;
+    source-overrides = { };
+    modifier = drv:
+      pkgs.haskell.lib.addBuildTools drv
+      (with pkgs.haskellPackages; [ cabal-install alex happy pkgs.clang_9 ]);
+  };
+in pkg
+#+END_SRC
+
+* Using the FFI
+Now that we've assured that we can include llvm-hs as a dependency, we can actually go about using it. This necessitates changing only =Toplevel.hs= to use the module generation functions from llvm-hs. Note that we run =verify= on the generated llvm before writing it to the file to make use of the extra checks that the llvm library can perform in debug mode that aren't exposed in llvm-hs-pure. In principle, we could elide the call to clang altogether and do the rest of the linking and assembly ourselves in Haskell. Perhaps a future post...
+
+#+BEGIN_SRC diff
+@@ -1,30 +1,31 @@
+ module Microc.Toplevel where
+
+ import           LLVM.AST
+-import           LLVM.Pretty
+
+ import           Data.String.Conversions
+ import           Data.Text                      ( Text )
+-import qualified Data.Text.IO                  as T
++import qualified LLVM.Module                   as LLVM
++import           LLVM.Context                   ( withContext )
++import           LLVM.Analysis                  ( verify )
+
+-import           System.IO
+ import           System.Directory
+ import           System.Process
+ import           System.Posix.Temp
+
+ -- | Generate an executable at the given filepath from an llvm module
+ compile :: Module -> FilePath -> IO ()
+ compile llvmModule outfile =
+   bracket (mkdtemp "build") removePathForcibly $ \buildDir ->
+     withCurrentDirectory buildDir $ do
+-      -- create temporary file for "output.ll"
+-      (llvm, llvmHandle) <- mkstemps "output" ".ll"
+-      let runtime = "../src/runtime.c"
++      let llvm = "output.ll"
++          runtime = "../src/runtime.c"
+       -- write the llvmModule to a file
+-      T.hPutStrLn llvmHandle (cs $ ppllvm llvmModule)
+-      hClose llvmHandle
++      withContext $ \ctx -> LLVM.withModuleFromAST ctx llvmModule
++        (\modl -> verify modl >> LLVM.writeBitcodeToFile (LLVM.File llvm) modl)
+       -- link the runtime with the assembly
+       callProcess
+         "clang"
+#+END_SRC
+
+* Codegen Fixup
+Having integrated llvm's analysis pass, it turns out we had a few bugs in our codegen phase which slipped through our test suite. In our type system, we treat the result of pointer subtraction as an =int=, which we somewhat arbitrarily decided are 32-bits. Since pointers are 64 bits on modern machines, this means that we have to truncate the result back to 32-bits.
+#+BEGIN_SRC diff
+@@ -13,6 +13,7 @@ import qualified LLVM.AST.FloatingPointPredicate
+                                                as FP
+ import           LLVM.AST                       ( Operand )
+ import qualified LLVM.AST                      as AST
++import qualified LLVM.AST.Float                as AST
+ import qualified LLVM.AST.Type                 as AST
+ import qualified LLVM.AST.Constant             as C
+ import           LLVM.AST.Name
+@@ -165,7 +166,8 @@ codegenSexpr (t, SBinop op lhs rhs) = do
+                 rhs'' <- L.ptrtoint rhs' AST.i64
+                 diff  <- L.sub lhs'' rhs''
+                 width <- L.int64 . fromIntegral <$> sizeof typ
+-                L.sdiv diff width
++                result <- L.sdiv diff width
++                L.trunc result AST.i32
+#+END_SRC
+
+When generating global variables, we were initializing them all with an integer 0 no matter what their type. For some reason, this worked fine when not running in debug mode, but llvm rightfully complains about it otherwise.
+#+BEGIN_SRC diff
+ codegenGlobal :: Bind -> LLVM ()
+ codegenGlobal (Bind t n) = do
+-  let name    = mkName $ cs n
+-      initVal = C.Int 0 0
+   typ <- ltypeOfTyp t
++  let name    = mkName $ cs n
++      initVal = case t of
++        Pointer _ -> C.Int 64 0
++        TyStruct _ -> C.AggregateZero typ
++        TyInt -> C.Int 32 0
++        TyBool -> C.Int 1 0
++        TyFloat -> C.Float (AST.Double 0)
++        TyChar -> C.Int 8 0
++        TyVoid -> error "Global void variables illegal"
+   var <- L.global name typ initVal
+   registerOperand n var
+#+END_SRC
+
+The only other error was that we accidentally used the =llvm.powi.i32= intrinsic to for =(float ** int)= exponentiation, even though we should be return doubles.
+#+BEGIN_SRC diff
+@@ -367,16 +369,23 @@ builtIns :: [(String, [AST.Type], AST.Type)]
+ builtIns =
+   [ ("printbig"     , [AST.i32]               , AST.void)
+   , ("llvm.pow.f64" , [AST.double, AST.double], AST.double)
+-  , ("llvm.powi.i32", [AST.double, AST.i32]   , AST.double)
++  , ("llvm.powi.f64", [AST.double, AST.i32]   , AST.double)
+   , ("malloc"       , [AST.i32]               , AST.ptr AST.i8)
+   , ("free"         , [AST.ptr AST.i8]        , AST.void)
+   ]
+
+modified   src/Microc/Semant.hs
+@@ -128,7 +128,7 @@ checkExpr expr = case expr of
+       Or     -> assertSym >> checkBool
+       Power  -> case (t1, t2) of
+         (TyFloat, TyFloat) -> pure (TyFloat, SCall "llvm.pow.f64" [lhs', rhs'])
+-        (TyFloat, TyInt  ) -> pure (TyFloat, SCall "llvm.powi.i32" [lhs', rhs'])
++        (TyFloat, TyInt  ) -> pure (TyFloat, SCall "llvm.powi.f64" [lhs', rhs'])
+         -- Implement this case directly in llvm
+         (TyInt  , TyInt  ) -> pure (TyInt, SBinop Power lhs' rhs')
+         _                  -> throwError $ TypeError [TyFloat, TyInt] t1 (Expr expr)
+#+END_SRC
+
+* Conclusion
+With those changes, our test suite passes again. I'm not sure whether to be more confident that the compiler is correct now that we've fixed these bugs or perturbed by the fact that our test suite didn't catch them, but I guess I'll settle on "cautiously optimistic."
