@@ -8,7 +8,7 @@ In our [[/posts/mcc3][last post]], we completed the backend stage of the compile
 * Dependencies
 From the cabal end of things, this is easy. We just add
 #+BEGIN_SRC yaml
-=- llvm-hs >= 9 && < 10
+- llvm-hs >= 9 && < 10
 #+END_SRC
 to our package.yaml and call it a day. With nix, things are a little trickier. At the time of this writing, both llvm-hs and llvm-hs-pretty are marked as =broken= in nixpkgs, which just means that we have to do a little fussing to get them to compile correctly under nix. Without further ado, here is the entirety of the =default.nix= in our project root.
 
