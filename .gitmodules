@@ -19,3 +19,12 @@
 [submodule "themes/hugo-primer"]
 	path = themes/hugo-primer
 	url = https://github.com/qqhann/hugo-primer
+[submodule "themes/tuftesque"]
+	path = themes/tuftesque
+	url = https://github.com/nstrayer/tuftesque
+[submodule "themes/hugo-tufte"]
+	path = themes/hugo-tufte
+	url = https://github.com/shawnohare/hugo-tufte
+[submodule "themes/ath-tufte-hugo"]
+	path = themes/ath-tufte-hugo
+	url = https://github.com/andrewheiss/ath-tufte-hugo
