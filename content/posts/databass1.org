@@ -1,0 +1,238 @@
+#+TITLE: Databass, Part 1: Queries
+#+DATE: 2021-12-26
+#+TAGS[]: haskell
+#+DRAFT: true
+
+It's been a while since my [[/posts/mcc0][last language series]] on this blog, but I figured I shouldn't let an entire calendar year go by without doing some technical writing here. This time we'll be working on creating a toy relational database in the vein of [[https://www.dcs.warwick.ac.uk/~hugh/TTM/documents_and_books.html][Tutorial D]], as described in /Databases, Types, and The Relational Model: The Third Manifesto/ by C.J. Date and Hugh Darwen. However, instead of creating a full database language with a its own syntax, we're going to /embed/ the database language in Haskell. In particular, we're going to try and get ghc to ensure that queries are well typed as opposed to writing our own type checker. The source for all of this is at [[https://github.com/laurenarnett/databass]].
+
+* Prior art
+Tutorial D is popular among Haskell programmers due to its focus on being a mathematically correct and elegant implementation of the relational algebra, as opposed to SQL which carries the baggage of backwards compatibility and [[https://www.scattered-thoughts.net/writing/against-sql/][inexpressivity]]. To my knowledge, there exist already
+- [[https://github.com/agentm/project-m36][project-m36]]
+This is a full-fledged Relational Database Management System based on Tutorial D that happens to be implemented in Haskell, not an EDSL.
+- [[https://hackage.haskell.org/package/HaskRel][HaskRel]]
+This /is/ an EDSL, and one that adheres vigorously to the Tutorial D specification. However, I didn't find out about it until I was deep into implementing my own version, and I wanted to keep going anyway for the learning experience. Also, it was written in 2015 for ghc-7.10, and type level programming in Haskell has come a long way since then.
+
+* Basic relational definitions
+Before embarking on this project, I didn't have much familiarity with the relational model aside from writing some basic SQL queries, so I'm going to fallaciously assume that everyone reading this knows /some/ SQL. The following is all adapted from Chapter 2 of /The Third Manifesto/.
+** Tuples and relations
+Date and Darwen define a tuple as "a set of \(n\) ordered triples of the form \(<A_i,T_i,v_i>\), where \(A_i\) is an attribute name, \(T_i\) is a type name, and \(v_i\) is a value of type \(T_i\)." A relation consists of a heading, which is essentially a tuple type, and a body, which is a set of tuples all with the same type, namely that of the heading. Tuples and relations correspond to rows and tables in SQL. The canonical example of these is the following:
+#+begin_src
+╔═════════════════════════════════════════════════════════════════╗
+║     S (suppliers)                          SP (suppliers-parts) ║
+║    ┌────┬───────┬────────┬────────┐           ┌────┬────┬─────┐ ║
+║    │ S# │ SNAME │ STATUS │ CITY   │           │ S# │ P# │ QTY │ ║
+║    ├════┼───────┼────────┼────────┤           ├════┼════┼─────┤ ║
+║    │ S1 │ Smith │     20 │ London │           │ S1 │ P1 │ 300 │ ║
+║    │ S2 │ Jones │     10 │ Paris  │           │ S1 │ P2 │ 200 │ ║
+║    │ S3 │ Blake │     30 │ Paris  │           │ S1 │ P3 │ 400 │ ║
+║    │ S4 │ Clark │     20 │ London │           │ S1 │ P4 │ 200 │ ║
+║    │ S5 │ Adams │     30 │ Athens │           │ S1 │ P5 │ 100 │ ║
+║    └────┴───────┴────────┴────────┘           │ S1 │ P6 │ 100 │ ║
+║     P (parts)                                 │ S2 │ P1 │ 300 │ ║
+║    ┌────┬───────┬───────┬────────┬────────┐   │ S2 │ P2 │ 400 │ ║
+║    │ P# │ PNAME │ COLOR │ WEIGHT │ CITY   │   │ S3 │ P2 │ 200 │ ║
+║    ├════┼───────┼───────┼────────┼────────┤   │ S4 │ P2 │ 200 │ ║
+║    │ P1 │ Nut   │ Red   │   12.0 │ London │   │ S4 │ P4 │ 300 │ ║
+║    │ P2 │ Bolt  │ Green │   17.0 │ Paris  │   │ S4 │ P5 │ 400 │ ║
+║    │ P3 │ Screw │ Blue  │   17.0 │ Oslo   │   └────┴────┴─────┘ ║
+║    │ P4 │ Screw │ Red   │   14.0 │ London │                     ║
+║    │ P5 │ Cam   │ Blue  │   12.0 │ Paris  │                     ║
+║    │ P6 │ Cog   │ Red   │   19.0 │ London │                     ║
+║    └────┴───────┴───────┴────────┴────────┘                     ║
+╚═════════════════════════════════════════════════════════════════╝
+
+VAR S REAL RELATION  { S# S#, SNAME NAME, STATUS INTEGER, CITY CHAR } KEY { S# } ;
+VAR P REAL RELATION  { P# P#, PNAME NAME, COLOR COLOR, WEIGHT WEIGHT, CITY CHAR } KEY { P# } ;
+VAR SP REAL RELATION { S# S#, P# P#, QTY QTY } KEY { S#, P# } ;
+#+end_src
+In Haskell, we can represent tuple types like so (in the real code we use the =Map= type from [[https://hackage.haskell.org/package/type-level-sets-0.8.9.0/docs/Data-Type-Map.html][the type-level-sets package]]. This is just for educational purposes):
+
+#+begin_src haskell
+-- This is like Proxy, but restricted to only having Symbol types
+data Var (label :: Symbol) = Var
+
+data Mapping k v = k :-> v
+
+-- This binds more tightly than list cons (:), which is convenient for pattern matching
+type (k :: Symbol) ::: (v :: Type) = k ':-> v
+infixr 6 :::
+
+data Tuple (attrs :: [Mapping Symbol Type]) where
+  Empty :: Tuple '[]
+  Ext :: Var label -> a -> Tuple as -> Tuple (label ::: a ': as)
+
+-- Some example headings
+type SHeading =
+  '[ "S#" ::: Int
+   , "SNAME" ::: String
+   , "STATUS" ::: Int
+   , "CITY" ::: String
+   ]
+
+type PHeading =
+  '[ "P#" ::: Int
+   , "PNAME" ::: String
+   , "COLOR" ::: Color
+   , "WEIGHT" ::: Double
+   , "CITY" ::: String
+   ]
+
+type SPHeading =
+  '[ "S#" ::: Int
+   , "P#" ::: Int
+   , "QTY" ::: Int
+   ]
+#+end_src
+To construct a /value/ of one of these tuples, we can write
+#+begin_src haskell
+sExample :: Tuple SHeading
+sExample = Ext Var 1 $ Ext Var "Smith" $ Ext Var 20 $ Ext Var "London" Empty
+#+end_src
+which corresponds to
+#+begin_src
+ ┌────┬───────┬────────┬────────┐
+ │ S# │ SNAME │ STATUS │ CITY   │
+ ├────┼───────┼────────┼────────┤
+ │ S1 │ Smith │     20 │ London │
+ └────┴───────┴────────┴────────┘
+#+end_src
+Relations in Tutorial D all have primary keys, though if we didn't want to designate one we could emulate having no primary key by making the entire heading the primary key. A relation key is a tuple with a subset of the attributes of the relation's heading. The "supplier" relation, defined as
+#+begin_src
+VAR S REAL RELATION  { S# S#, SNAME NAME, STATUS INTEGER, CITY CHAR } KEY { S# } ;
+#+end_src
+in Tutorial D, has primary key =S#=, whereas the "supplier-parts" relation
+#+begin_src
+VAR SP REAL RELATION { S# S#, P# P#, QTY QTY } KEY { S#, P# } ;
+#+end_src
+has a composite key =S#, P#=. To check the property that a table key be some subset of the table heading, we can use the =Submap= typeclass from =type-level-sets=. We'll also want to be able to split tuples into keys and everything else for storage and put them back together, which can be similarly accomplished with the =Split= and =Unionable= typeclasses. Packing these typeclasses into a =GADT= constructor ensures that those instances are in scope when we pattern match on that constructor. While the constructor doesn't contain any runtime information here, we could augment it with some kind of integrity constraints of the form of =Tuple heading -> Bool= or =[Tuple heading] -> Bool= that we would check for any new tuples added to the relation at runtime.
+#+begin_src haskell
+data Relation heading key val =
+  ( Submap key heading -- Assert the key is a subset of the heading
+  , Submap val heading -- Assert the rest of the tuple is also a subset of the heading
+  , Split key val heading -- Assert that we can split the heading into keys and vals
+  , Unionable key val -- Assert we can stitch keys and vals together
+  , Union key val ~ heading -- Assert that when we perform the stitching operation the result is the heading
+  , IsMap heading -- Assert that there are no duplicates in the heading and that attributes are sorted
+  )
+  => MkRelation
+#+end_src
+"supplier" in this scheme is
+#+begin_src haskell
+s :: Relation
+  (AsMap '["S#" ::: Int, "SNAME" ::: String, "STATUS" ::: Int, "CITY" ::: String])
+  '["S#" ::: Int]
+  (AsMap '["SNAME" ::: String, "STATUS" ::: Int, "CITY" ::: String])
+s = MkRelation
+#+end_src
+Whereas in Tutorial D, the order of attributes in tuples is immaterial, in Haskell, we are unfortunately relegated to type level lists, which are ordered. To get around that, we use the =AsMap= type family here to sort attributes alphabetically and procede everywhere else under the assumption that every heading is normalized in this fashion.
+
+It's also a bit annoying to have to specify so much redundant information in the =Relation= type signature. We can provide a type family to alleviate this
+#+begin_src haskell
+type family Rel (heading :: [Mapping Symbol Type]) (key :: [Symbol]) where
+  Rel heading key = Relation heading (heading :!! key) (heading :\\ key)
+
+-- | Type level key lookup
+type family (m :: [Mapping Symbol Type]) :! (c :: Symbol) :: Type where
+  (label ::: a ': rest) :! label = a
+  (attr ': rest) :! label = rest :! label
+  '[] :! label = TypeError ( 'Text "Could not find " ':<>: 'ShowType label)
+
+-- | Type level multi-key lookup
+type family (m :: [Mapping Symbol Type]) :!! (cs :: [Symbol]) :: [Mapping Symbol Type] where
+  m :!! (label ': ls) = (label ::: (m :! label)) ': (m :!! ls)
+  m :!! '[] = '[]
+
+-- | Type level key removal
+type family (m :: [Mapping Symbol Type]) :\ (c :: Symbol) :: [Mapping Symbol Type] where
+  (label ::: a ': rest) :\ label = rest
+  (attr ': rest) :\ label = attr ': (rest :\ label)
+  '[] :\ label = TypeError ( 'Text "Could not find " ':<>: 'ShowType label)
+
+-- | Type level multi-key removal
+type family (m :: [Mapping Symbol Type]) :\\ (cs :: [Symbol]) :: [Mapping Symbol Type] where
+  m :\\ (label ': ls) = (m :\ label) :\\ ls
+  m :\\ '[] = m
+#+end_src
+* Defining queries
+Now that we can talk about tuples and relations, we can define the type of a =Query= in Haskell that we expect to return a relation, consisting of tuples of type =t=.
+#+begin_src haskell
+data Query (t :: [Mapping Symbol Type]) where
+  ...
+#+end_src
+However, we quickly find that it's impossible to write the analog of =SELECT * FROM table= in a type safe manner without knowing about all the named relations in scope for the extent of the query. We can just add another type parameter, =relations=, which reuses =Tuple=.
+#+begin_src haskell
+data Query (t :: [Mapping Symbol Type]) (relations :: [Mapping Symbol Type]) where
+  RelationId ::
+    ((relations :! name) ~ Relation heading key val) =>
+    Var name ->
+    Relation heading key val ->
+    Query heading relations
+#+end_src
+=RelationId (Var @"table") someRelation= corresponds to the sql =select * from table=, assuming that we've created =someRelation= named "table." Now that we have the most basic query possible, we can define the rest of the relational algebra.
+** Rename
+From Chapter 2:
+#+begin_quote
+Let =a= be a relation with an attribute =X= and no attribute =Y=. Then the expression =a RENAME ( X AS Y )=
+yields a relation that differs from a only in that the name of the specified attribute is =Y= instead of =X=.
+#+end_quote
+We'll want some type family that can compute the renaming at compile time.
+#+begin_src haskell
+type family Rename (x :: Symbol) (y :: Symbol) (relation :: [Mapping Symbol Type]) where
+  Rename a b '[] = '[]
+  Rename a b ((a ::: t) ': rest) = (b ::: t) ': Rename a b rest
+  Rename a b ((b ::: t) ': rest) =
+    TypeError
+      ( 'Text "Cannot rename "
+          ':<>: 'Text a
+          ':<>: 'Text " to "
+          ':<>: 'Text b
+          ':$$: 'Text "The name already exists in the tuple"
+      )
+  Rename a b (c ': rest) = c ': Rename a b rest
+#+end_src
+
+The =Query= constructor can just use the type family.
+#+begin_src haskell
+  Rename ::
+    forall a b t tables.
+    (Sortable (Rename a b t)) =>
+    Var a ->
+    Var b ->
+    Query t relations ->
+    Query (Sort (Rename a b t)) relations
+#+end_src
+Remember that we operate assuming that every heading transformation takes a sorted heading and should return a sorted heading. Renaming is not order preserving in general so we have to sort the output after the operation [fn:: The =Sort= type family and =Sortable= class use the canonical Haskell quicksort implementation that gets shown to beginners to demonstrate how elegant the language is. Since we know we're inserting one element into an otherwise ordered list, we /should/ just do that in linear time. This is left as an exercise to the reader.].
+** Restrict
+=Restrict= is essentially the same as SQL =WHERE=.
+#+begin_src haskell
+  Restrict :: (Tuple t -> Bool) -> Query t relations -> Query t relations
+#+end_src
+** Project
+This is like specifying which columns to select in SQL. For =select col1, col2 from table= we have =RelationId (Var @"table") someRelation & Project=. Amazingly, if we have enough type signatures specified, ghc can /infer/ which columns we wanted to project onto. We'll also get a type error if we try to project onto columns that don't exist. Note that projection /is/ order preserving, unlike renaming, so we don't have to do any special sorting.
+#+begin_src haskell
+  Project :: (Submap t' t) => Query t relations -> Query t' relations
+#+end_src
+** Extend
+From the book
+#+begin_quote
+Let a be a relation. Then the extension =EXTEND a ADD ( exp AS Z )=
+is a relation with
+- A heading consisting of the heading of a extended with the attribute =Z=
+- A body consisting of all tuples =t= such that =t= is a tuple of a extended with a value for attribute =Z= that is computed by evaluating /exp/ on that tuple of =a=
+
+Relation a must not have an attribute called =Z=, and /exp/ must not refer to =Z=.
+
+Here is a simple example of EXTEND:
+     =EXTEND S ADD ( 3 * STATUS AS TRIPLE )=
+#+end_quote
+
+=Extend= doesn't have a great SQL analogue. The closest construct is probably something like =SELECT a + 1 from table= where you put some expression after the =SELECT=. 
+#+begin_src haskell
+  Extend ::
+    forall (l :: Symbol) (a :: Type) (t :: [Mapping Symbol Type]) relations.
+    (Member l t ~ 'False, Sortable (l ::: a ': t)) =>
+    Var l ->
+    (Tuple t -> a) ->
+    Query t relations ->
+    Query (Sort (l ::: a ': t)) relations
+#+end_src
