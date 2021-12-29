@@ -28,6 +28,10 @@ copyright = "&copy;Joseph Morag 2020"
 [markup.goldmark.renderer]
   unsafe = true
 
+[markup.highlight]
+  codeFences = true
+  style = "solarized-dark"
+
 [params]
   description = "A blog about various technologies I like"
   # twitter = "Your Twitter username"
