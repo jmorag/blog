@@ -3,7 +3,7 @@
 #+TAGS[]: haskell
 #+DRAFT: true
 
-It's been a while since my [[/posts/mcc0][last language series]] on this blog, but I figured I shouldn't let an entire calendar year go by without doing some technical writing here. This time we'll be working on creating a toy relational database in the vein of [[https://www.dcs.warwick.ac.uk/~hugh/TTM/documents_and_books.html][Tutorial D]], as described in /Databases, Types, and The Relational Model: The Third Manifesto/ by C.J. Date and Hugh Darwen. However, instead of creating a full database language with a its own syntax, we're going to /embed/ the database language in Haskell. In particular, we're going to try and get ghc to ensure that queries are well typed as opposed to writing our own type checker. The source for all of this is at [[https://github.com/laurenarnett/databass]].
+It's been a while since my [[/posts/mcc0][last language series]] on this blog, but I figured I shouldn't let an entire calendar year go by without doing some technical writing here. This time we'll be working on creating a toy relational database in the vein of [[https://www.dcs.warwick.ac.uk/~hugh/TTM/documents_and_books.html][Tutorial D]], as described in /Databases, Types, and The Relational Model: The Third Manifesto/ by C.J. Date and Hugh Darwen. However, instead of creating a full database language with a its own syntax, we're going to /embed/ the database language in Haskell. In particular, we're going to try and get ghc to ensure that queries are well typed as opposed to writing our own type checker. The source for all of this is at [[https://github.com/jmorag/databass]].
 
 * Prior art
 Tutorial D is popular among Haskell programmers due to its focus on being a mathematically correct and elegant implementation of the relational algebra, as opposed to SQL which carries the baggage of backwards compatibility and [[https://www.scattered-thoughts.net/writing/against-sql/][inexpressivity]]. To my knowledge, there exist already
@@ -68,6 +68,8 @@ type SHeading =
    , "STATUS" ::: Int
    , "CITY" ::: String
    ]
+
+data Color = Red | Green | Blue
 
 type PHeading =
   '[ "P#" ::: Int
@@ -153,22 +155,58 @@ type family (m :: [Mapping Symbol Type]) :\\ (cs :: [Symbol]) :: [Mapping Symbol
   m :\\ (label ': ls) = (m :\ label) :\\ ls
   m :\\ '[] = m
 #+end_src
-* Defining queries
-Now that we can talk about tuples and relations, we can define the type of a =Query= in Haskell that we expect to return a relation, consisting of tuples of type =t=.
+
+To store relations in memory at runtime, we'll use the standard =Map= from =containers=.
 #+begin_src haskell
-data Query (t :: [Mapping Symbol Type]) where
-  ...
+type family RelationToMap relation where
+  RelationToMap (Relation heading key val) = Map (Tuple key) (Tuple val)
 #+end_src
-However, we quickly find that it's impossible to write the analog of =SELECT * FROM table= in a type safe manner without knowing about all the named relations in scope for the extent of the query. We can just add another type parameter, =relations=, which reuses =Tuple=.
+
+We could optimize the representation a bit by using an =IntMap= for the common case of a single =Int= primary key, but in the interest of simplicity we'll forego that here.
+
+The entire contents of the databass consist of a series of named relations, for which we can reuse our existing =Tuple= infrastructure.
+#+begin_src haskell
+type family RelationsToDB (relations :: [Mapping Symbol Type]) where
+  RelationsToDB '[] = '[]
+  RelationsToDB (name ::: relation ': rest) =
+    name ::: RelationToMap relation ': RelationsToDB rest
+#+end_src
+
+While in standard value-level Haskell we'd usually write this as =relationsToDB = fmap relationToMap= or something, type families don't have partial application and I'd rather not pull in something like =singletons= if I can get away without it.
+* Defining queries
+Now that we can talk about tuples and relations, we can define the type of a =Query= acting on a set of =relation= s that we expect to return a relation, consisting of tuples of type =t=.
 #+begin_src haskell
 data Query (t :: [Mapping Symbol Type]) (relations :: [Mapping Symbol Type]) where
+#+end_src
+
+We'll also want some way to run the query.
+#+begin_src haskell
+import qualified Data.Map as M
+
+runQuery :: Query t relations -> Tuple (RelationsToDB relations) -> [Tuple t]
+runQuery q db = case q of
+  ...
+#+end_src
+** Identity
+The simplest possible query is to just get the entire contents of a single named relation.
+#+begin_src haskell
   RelationId ::
-    ((relations :! name) ~ Relation heading key val) =>
+    ( relation ~ Relation heading key val
+    , (relations :! name) ~ relation
+    , IsMember name (RelationToMap relation) (RelationsToDB relations)
+    ) =>
     Var name ->
     Relation heading key val ->
     Query heading relations
 #+end_src
-=RelationId (Var @"table") someRelation= corresponds to the sql =select * from table=, assuming that we've created =someRelation= named "table." Now that we have the most basic query possible, we can define the rest of the relational algebra.
+=RelationId (Var @"table") someRelation= corresponds to the sql =select * from table=, assuming that we've created =someRelation= named "table." To run this query, we =lookp= the name of the relation in the database and reassemble all of the key-value pairs into the heading.
+#+begin_src haskell
+  RelationId name (MkRelation :: Relation heading key val) ->
+    let relation = lookp name db
+     in fmap (\(k :: Tuple key, v :: Tuple val) -> k `union` v) (M.toList relation)
+#+end_src
+
+ This is where the trick of putting the constraints in GADT constructors comes into play. Without =Unionable key val= in =MkRelation=, ghc would complain about not being able to find a =Unionable key val= when calling =k `union` v= and without =IsMember name (RelationToMap relation) (RelationsToDB relations)=, =lookp name db= would similarly fail.
 ** Rename
 From Chapter 2:
 #+begin_quote
@@ -194,23 +232,68 @@ type family Rename (x :: Symbol) (y :: Symbol) (relation :: [Mapping Symbol Type
 The =Query= constructor can just use the type family.
 #+begin_src haskell
   Rename ::
-    forall a b t tables.
     (Sortable (Rename a b t)) =>
     Var a ->
     Var b ->
     Query t relations ->
     Query (Sort (Rename a b t)) relations
 #+end_src
-Remember that we operate assuming that every heading transformation takes a sorted heading and should return a sorted heading. Renaming is not order preserving in general so we have to sort the output after the operation [fn:: The =Sort= type family and =Sortable= class use the canonical Haskell quicksort implementation that gets shown to beginners to demonstrate how elegant the language is. Since we know we're inserting one element into an otherwise ordered list, we /should/ just do that in linear time. This is left as an exercise to the reader.].
+Remember that we operate assuming that every heading transformation takes a sorted heading and should return a sorted heading. Renaming is not order preserving in general so we have to sort the output after the operation [fn:: The =Sort= type family and =Sortable= class use the canonical Haskell quicksort implementation that gets shown to beginners to demonstrate how elegant the language is. Since we know we're inserting one element into an otherwise ordered list, we /should/ just do that in linear time. This is left as an exercise to the reader.]. To implement renaming, we need some function
+#+begin_src haskell
+renameTuple :: Var a -> Var b -> Tuple t -> Tuple (Rename a b t)
+#+end_src
+
+Recall, though, that the definition of =Var= is just =data Var (k :: Symbol) = Var=, so there is no difference in runtime representation between =Var :: Var "a"= and =Var :: Var "b"=. We can be confident in this assertion because ghc allows
+
+#+begin_src haskell
+renameVar :: Var a -> Var b
+renameVar = coerce
+#+end_src
+
+Automatically proving that a =Tuple t= can be coerced into a =Tuple (Rename a b t)= is, sadly, beyond ghc's capabilities. Having convinced ourselves, though, we can write
+#+begin_src haskell
+renameTuple _a _b = unsafeCoerce
+#+end_src
+
+Don't try this at home unless you really know what you're doing. Do try out implementing this function without =unsafeCoerce=. You'll probably want to start out with something like
+
+#+begin_src haskell
+class Renamable a b t where
+  renameTuple :: Var a -> Var b -> Tuple t -> Tuple (Rename a b t)
+
+instance Renameable a b '[] where
+  renameTuple _ _ Empty = Empty
+#+end_src
+
+to help guide ghc through the induction.
+
 ** Restrict
 =Restrict= is essentially the same as SQL =WHERE=.
 #+begin_src haskell
   Restrict :: (Tuple t -> Bool) -> Query t relations -> Query t relations
 #+end_src
+
+Refreshingly, this constructor has no constraints or other GADT shenanigans. It's even expressible without GADT syntax:
+#+begin_src haskell
+data Query t relations =
+     | ...
+     | Restrict (Tuple t -> Bool) (Query t relations)
+     | ...
+#+end_src
+
+The implementation is correspondingly straightforward.
+#+begin_src haskell
+  Restrict f q' -> filter f (runQuery q' db)
+#+end_src
 ** Project
 This is like specifying which columns to select in SQL. For =select col1, col2 from table= we have =RelationId (Var @"table") someRelation & Project=. Amazingly, if we have enough type signatures specified, ghc can /infer/ which columns we wanted to project onto. We'll also get a type error if we try to project onto columns that don't exist. Note that projection /is/ order preserving, unlike renaming, so we don't have to do any special sorting.
 #+begin_src haskell
   Project :: (Submap t' t) => Query t relations -> Query t' relations
+#+end_src
+
+Embedding the =Submap t' t= constraint basically amounts to the whole implementation.
+#+begin_src haskell
+  Project q' -> map submap (runQuery q' db)
 #+end_src
 ** Extend
 From the book
@@ -229,10 +312,136 @@ Here is a simple example of EXTEND:
 =Extend= doesn't have a great SQL analogue. The closest construct is probably something like =SELECT a + 1 from table= where you put some expression after the =SELECT=. 
 #+begin_src haskell
   Extend ::
-    forall (l :: Symbol) (a :: Type) (t :: [Mapping Symbol Type]) relations.
     (Member l t ~ 'False, Sortable (l ::: a ': t)) =>
     Var l ->
     (Tuple t -> a) ->
     Query t relations ->
     Query (Sort (l ::: a ': t)) relations
 #+end_src
+
+Basically, given some function that takes a label and the existing tuple type, we stick the result of calling that function on every tuple in the relation into a new attribute with the label.
+
+#+begin_src haskell
+  Extend label f q' -> map (\t -> quicksort (Ext label (f t) t)) (runQuery q' db)
+#+end_src
+** Join
+The last type of query we'll implement here is =Join=, corresponding to the "natural join" which takes all common attributes of two relations and returns all tuples that have the same values for those attributes. =type-level-sets= doesn't have a way of computing the intersection of two mapping lists, so we'll have to write it ourselves. Let's look at what this function looks like at the value level.
+#+begin_src haskell
+sortedIntersection :: Ord a => [a] -> [a] -> [a]
+sortedIntersection t [] = []
+sortedIntersection [] t = []
+sortedIntersection (x:xs) (y:ys)
+  | x == y     = x : sortedIntersection xs ys
+  | x < y      = sortedIntersection xs (y:ys)
+  | otherwise  = sortedIntersection (x:xs) ys
+
+-- >>> sortedIntersection [1..5] [5..10]
+-- [5]
+#+end_src
+Now we can convert this to the type level. Type families kind of resemble functions except that when we bind a type variable multiple times in a pattern, we assert that it refers to the same type in both locations, whereas binding a variable twice in a function pattern is an error. Also, type families can only "branch" at top level patterns, so we'll have to make a helper type family to store the result of comparing labels.
+#+begin_src haskell
+type family Intersection (t :: [Mapping Symbol Type]) (t' :: [Mapping Symbol Type]) :: [Mapping Symbol Type] where
+  Intersection t '[] = '[]
+  Intersection '[] t = '[]
+  Intersection (a ': as) (a ': bs) = a ': Intersection as bs
+  Intersection (l ::: a ': as) (r ::: b ': bs) =
+    IntersectionCase (CmpSymbol l r) l r a as b bs
+
+type family IntersectionCase (ordering :: Ordering) l r a as b bs where
+  IntersectionCase 'LT l r a as b bs = Intersection as (r ::: b ': bs)
+  IntersectionCase 'GT l r a as b bs = Intersection (l ::: a ': as) bs
+  IntersectionCase 'EQ l r a as a bs = l ::: a ': Intersection as bs
+  IntersectionCase 'EQ l r a as b bs =
+    TypeError
+      ( 'Text "Cannot join on attribute '"
+          ':<>: 'Text l
+          ':<>: 'Text "'"
+          ':$$: 'Text l
+          ':<>: 'Text "has type "
+          ':<>: 'ShowType a
+          ':<>: 'Text " in the first relation and type "
+          ':<>: 'ShowType b
+          ':<>: 'Text "in the second"
+      )
+
+-- >>> :kind! Intersection '["id" ::: Int, "name" ::: String] '["id" ::: Int]
+-- Intersection '["id" ::: Int, "name" ::: String] '["id" ::: Int] :: [Mapping Symbol *]
+-- = '[ "id" ':-> Int]
+
+-- >>> :kind! Intersection '["id" ::: Int, "name" ::: String] '["id" ::: word]
+-- Intersection '["id" ::: Int, "name" ::: String] '["id" ::: Word] :: [Mapping Symbol *]
+-- = (TypeError ...)
+#+end_src
+It's kind of nice to be able to "crash" in type families with a custom =TypeError= and not feel bad about it like when we write =error= in a normal function. Anyway, now that we can calculate which attributes we want to join on, we can attempt to write down the full =Join= constructor.
+#+begin_src haskell
+  Join ::
+    ( common ~ Intersection t' t
+    , Eq (Tuple common)
+    , Split common t'_rest t'
+    , Split common t_rest t
+    , Sortable (common :++ (t'_rest :++ t_rest))
+    ) =>
+    Query t' tables ->
+    Query t tables ->
+    Query (Sort (common :++ (t'_rest :++ t_rest))) tables
+#+end_src
+However, we get a big type error.
+#+begin_src
+    • Could not deduce: Sort (common :++ (t'_rest0 :++ t_rest0))
+                        ~ Sort (common :++ (t'_rest :++ t_rest))
+      from the context: (common ~ Intersection t' t, Eq (Tuple common),
+                         Split common t'_rest t', Split common t_rest t,
+                         Sortable (common :++ (t'_rest :++ t_rest)))
+        bound by the type of the constructor ‘Join’:
+                   forall (common :: [Mapping Symbol *]) (t' :: [Mapping Symbol *])
+                          (t :: [Mapping Symbol *]) (t'_rest :: [Mapping Symbol *])
+                          (t_rest :: [Mapping Symbol *]) (tables :: [Mapping Symbol *]).
+                   (common ~ Intersection t' t, Eq (Tuple common),
+                    Split common t'_rest t', Split common t_rest t,
+                    Sortable (common :++ (t'_rest :++ t_rest))) =>
+                   Query t' tables
+                   -> Query t tables
+                   -> Query (Sort (common :++ (t'_rest :++ t_rest))) tables
+        at /Users/josephmorag/Projects/databass/src/Databass/Blog.hs:(127,3)-(138,57)
+      Expected type: Query t' tables
+                     -> Query t tables
+                     -> Query (Sort (common :++ (t'_rest :++ t_rest))) tables
+        Actual type: Query t' tables
+                     -> Query t tables
+                     -> Query (Sort (common :++ (t'_rest0 :++ t_rest0))) tables
+      NB: ‘Sort’ is a non-injective type family
+      The type variables ‘t'_rest0’, ‘t_rest0’ are ambiguous
+    • In the ambiguity check for ‘Join’
+      To defer the ambiguity check to use sites, enable AllowAmbiguousTypes
+      In the definition of data constructor ‘Join’
+      In the data type declaration for ‘Query’
+#+end_src
+While we could solve this by enabling the =AllowAmbiguousTypes= extension, as helpfully suggested in the error message, we'll need to have access to the =t_rest= and =t'rest= type variables inside the implementation, like we did in the =RelationId= case. I don't actually know how to introduce them into the scope of the function with =AllowAmbiguousTypes= turned on, so instead, we'll leave it off and pass those type arguments inside =Proxy= s so we can match on them. If anyone does know how to accomplish that without =Proxy= please let me know.
+#+begin_src haskell
+  Join ::
+    ( common ~ Intersection t' t
+    , Eq (Tuple common)
+    , Split common t'_rest t'
+    , Split common t_rest t
+    , Sortable (common :++ (t'_rest :++ t_rest))
+    ) =>
+    Proxy t'_rest ->
+    Proxy t_rest ->
+    Query t' tables ->
+    Query t tables ->
+    Query (Sort (common :++ (t'_rest :++ t_rest))) tables
+#+end_src
+
+For the implementation, we'll write a "nested inner loop" join, though it doesn't look too much like a C-style nested loop when written using the list monad like this.
+#+begin_src haskell
+  Join (_ :: Proxy t_l_rest) (_ :: Proxy t_r_rest) q1 q2 -> do
+    l :: Tuple t_l <- runQuery q1 db
+    r :: Tuple t_r <- runQuery q2 db
+    let (l_common, l_rest) = split @(Intersection t_l t_r) @t_l_rest l
+        (r_common, r_rest) = split @(Intersection t_l t_r) @t_r_rest r
+    guard (l_common == r_common)
+    pure (quicksort $ append l_common (append l_rest r_rest))
+#+end_src
+
+* Conclusion
+There are a few more relational operations described in Tutorial D that we haven't covered here, including =Summarize=, =Group=, and =Ungroup=, but what we have is good enough to cover most SQL queries that I've ever written. In the next parts of the series we'll go over actually populating the database and try to use it for a toy server.
