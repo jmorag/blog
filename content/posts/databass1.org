@@ -1,9 +1,9 @@
 #+TITLE: Databass, Part 1: Queries
-#+DATE: 2021-12-26
+#+DATE: 2021-12-31
 #+TAGS[]: haskell
-#+DRAFT: true
+#+DRAFT: false
 
-It's been a while since my [[/posts/mcc0][last language series]] on this blog, but I figured I shouldn't let an entire calendar year go by without doing some technical writing here. This time we'll be working on creating a toy relational database in the vein of [[https://www.dcs.warwick.ac.uk/~hugh/TTM/documents_and_books.html][Tutorial D]], as described in /Databases, Types, and The Relational Model: The Third Manifesto/ by C.J. Date and Hugh Darwen. However, instead of creating a full database language with a its own syntax, we're going to /embed/ the database language in Haskell. In particular, we're going to try and get ghc to ensure that queries are well typed as opposed to writing our own type checker. The source for all of this is at [[https://github.com/jmorag/databass]].
+It's been a while since my [[/posts/mcc0][last language series]] on this blog, but I figured I shouldn't let an entire calendar year go by without doing some technical writing here. This time we'll be working on creating a toy relational database in the vein of [[https://www.dcs.warwick.ac.uk/~hugh/TTM/documents_and_books.html][Tutorial D]], as described in /Databases, Types, and The Relational Model: The Third Manifesto/ by C.J. Date and Hugh Darwen. However, instead of creating a full database language with a its own syntax, we're going to /embed/ the database language in Haskell. In particular, we're going to try and get ghc to ensure that queries are well typed as opposed to writing our own type checker. The source for all of this is [[https://github.com/jmorag/databass/blob/587abffe561475284528f3a7408f50e6d6718850/src/Databass/Blog.hs][on github]].
 
 * Prior art
 Tutorial D is popular among Haskell programmers due to its focus on being a mathematically correct and elegant implementation of the relational algebra, as opposed to SQL which carries the baggage of backwards compatibility and [[https://www.scattered-thoughts.net/writing/against-sql/][inexpressivity]]. To my knowledge, there exist already
@@ -12,10 +12,97 @@ This is a full-fledged Relational Database Management System based on Tutorial D
 - [[https://hackage.haskell.org/package/HaskRel][HaskRel]]
 This /is/ an EDSL, and one that adheres vigorously to the Tutorial D specification. However, I didn't find out about it until I was deep into implementing my own version, and I wanted to keep going anyway for the learning experience. Also, it was written in 2015 for ghc-7.10, and type level programming in Haskell has come a long way since then.
 
+* A quick type level Haskell tutorial
+Making a type-safe version of the relational model requires /a lot/ of computation at the type level. All of the code in this post assumes the following extensions are enabled.
+#+begin_src haskell
+ConstraintKinds
+DataKinds
+FlexibleContexts
+FlexibleInstances
+GADTs
+InstanceSigs
+KindSignatures
+MultiParamTypeClasses
+PolyKinds
+RankNTypes
+ScopedTypeVariables
+TypeApplications
+TypeFamilies
+TypeOperators
+UndecidableInstances
+#+end_src
+
+I've arbitrarily decided that =DataKinds=, =GADTs=, and =TypeFamilies= deserve a little primer here, though I highly recommend the [[https://downloads.haskell.org/ghc/8.10.7/docs/html/users_guide/glasgow_exts.html#type-families][ghc user's guide]] for a more thorough treatment. If you're already familiar with these extensions, feel free to skip to the next section.
+** DataKinds
+Turning on =-XDataKinds= "promotes" all data constructors to the type level. For =data Bool = True | False= ghc generates /types/ ='True= and ='False= with /kind/ =Bool=. Note the preceding ='= which disambiguates between standard value-level booleans and the ones at the type level. This extension also gives us type level strings, called =Symbol=. You can use =Symbol= s as "tags" at the type level, like
+#+begin_src haskell
+newtype Currency (t :: Symbol) = MkCurrency Rational
+
+usdToEur :: Currency "USD" -> Currency "EUR"
+usdToEur (MkCurrency x) = MkCurrency (0.88 * x) -- on December 31, 2021
+#+end_src
+. We'll use them for database column names.
+** GADTs
+Generalized Algebraic Data Types ... generalize ... normal Haskell data types. Syntactically, they are written as
+#+begin_src haskell
+data Maybe a where
+  Just :: a -> Maybe a
+  Nothing :: Maybe a
+#+end_src
+which has the same semantics as regular =Maybe=. However, we can also refine type variables appearing on the right hand side of constructors and recover them when pattern matching.
+#+begin_src haskell
+data Term a where
+  Lit :: Int -> Term Int
+  Add :: Term Int -> Term Int -> Term Int
+  Equal :: Term Int -> Term Int -> Term Bool
+  If :: Term Bool -> Term a -> Term a -> Term a
+#+end_src
+Now ghc will complain if we try to call =If= on anything other than a =Bool=.
+#+begin_src haskell
+eval :: Term a -> a
+eval (Lit i) = i
+eval (Add x y) = eval x + eval y
+eval (Equal x y) = eval x == eval y
+eval (If b cons alt) = if eval b then eval cons else eval alt
+#+end_src
+
+We can even use constraints in GADT constructors.
+#+begin_src haskell
+data Term a where
+  Lit :: Num a => a -> Term a
+  Add :: Num a => Term a -> Term a -> Term a
+  Equal :: Eq a => Term a -> Term a -> Term Bool
+  If :: Term Bool -> Term a -> Term a -> Term a
+#+end_src
+=eval= remains the same.
+** Type families
+There are two kinds of type families in ghc, open and closed. We'll only be talking about the closed variant here, since that's what we're using, but it's good to know that open ones exist. At first approximation, type families are like normal Haskell functions without partial application or currying and if you could only use top level pattern matching.
+#+begin_src haskell
+type family Unsigned (a :: Type) :: Type where
+  Unsigned Int8 = Word8
+  Unsigned Int16 = Word16
+  Unsigned Int32 = Word32
+  Unsigned Int64 = Word64
+#+end_src
+We can inspect behavior in ghci by running
+#+begin_src
+λ> :kind! Unsigned Int32
+Unsigned Int32 :: *
+= Word32
+#+end_src
+or =:k!= for short. A big point of departure from normal functions is that for =Unsigned Bool= or =Unsigned a= where =Bool= and =a= are not covered by the patterns, there is no pattern match failure. Instead, =Unsigned Bool= and =Unsigned a= create uninhabited (except by =⟂=) types like =Void=. If, instead, we do want to crash on an argument we didn't handle, we can throw a custom type error.
+#+begin_src haskell
+type family Unsigned (a :: Type) :: Type where
+  Unsigned Int8 = Word8
+  Unsigned Int16 = Word16
+  Unsigned Int32 = Word32
+  Unsigned Int64 = Word64
+  Unsigned a = TypeError ('Text "Unexpected type " ':<>: 'ShowType a)
+#+end_src
 * Basic relational definitions
-Before embarking on this project, I didn't have much familiarity with the relational model aside from writing some basic SQL queries, so I'm going to fallaciously assume that everyone reading this knows /some/ SQL. The following is all adapted from Chapter 2 of /The Third Manifesto/.
+The following is all adapted from Chapter 2 of /The Third Manifesto/. Some basic knowledge of SQL is assumed.
 ** Tuples and relations
-Date and Darwen define a tuple as "a set of \(n\) ordered triples of the form \(<A_i,T_i,v_i>\), where \(A_i\) is an attribute name, \(T_i\) is a type name, and \(v_i\) is a value of type \(T_i\)." A relation consists of a heading, which is essentially a tuple type, and a body, which is a set of tuples all with the same type, namely that of the heading. Tuples and relations correspond to rows and tables in SQL. The canonical example of these is the following:
+Date and Darwen define a tuple as "a set of \(n\) ordered triples of the form \(<A_i,T_i,v_i>\), where \(A_i\) is an attribute name, \(T_i\) is a type name, and \(v_i\) is a value of type \(T_i\)." A relation consists of a heading, which is essentially a tuple type, and a body, which is a set of tuples all with the same type, namely that of the heading. Tuples and relations correspond to rows and tables in SQL. Here are three relations.
 #+begin_src
 ╔═════════════════════════════════════════════════════════════════╗
 ║     S (suppliers)                          SP (suppliers-parts) ║
@@ -98,7 +185,7 @@ which corresponds to
  │ S1 │ Smith │     20 │ London │
  └────┴───────┴────────┴────────┘
 #+end_src
-Relations in Tutorial D all have primary keys, though if we didn't want to designate one we could emulate having no primary key by making the entire heading the primary key. A relation key is a tuple with a subset of the attributes of the relation's heading. The "supplier" relation, defined as
+Relations in Tutorial D all have primary keys. A relation key is a tuple with a subset of the attributes of the relation's heading. The "supplier" relation, defined as
 #+begin_src
 VAR S REAL RELATION  { S# S#, SNAME NAME, STATUS INTEGER, CITY CHAR } KEY { S# } ;
 #+end_src
@@ -106,7 +193,7 @@ in Tutorial D, has primary key =S#=, whereas the "supplier-parts" relation
 #+begin_src
 VAR SP REAL RELATION { S# S#, P# P#, QTY QTY } KEY { S#, P# } ;
 #+end_src
-has a composite key =S#, P#=. To check the property that a table key be some subset of the table heading, we can use the =Submap= typeclass from =type-level-sets=. We'll also want to be able to split tuples into keys and everything else for storage and put them back together, which can be similarly accomplished with the =Split= and =Unionable= typeclasses. Packing these typeclasses into a =GADT= constructor ensures that those instances are in scope when we pattern match on that constructor. While the constructor doesn't contain any runtime information here, we could augment it with some kind of integrity constraints of the form of =Tuple heading -> Bool= or =[Tuple heading] -> Bool= that we would check for any new tuples added to the relation at runtime.
+has a composite key =S#, P#=. To check the property that a table key be some subset of the table heading, we can use the =Submap= typeclass from =type-level-sets=. We'll also want to be able to split tuples into keys and everything else for storage and put them back together, which can be similarly accomplished with the =Split= and =Unionable= typeclasses. Packing these typeclasses into a =GADT= constructor ensures that those instances are in scope when we pattern match on that constructor. While we haven't added any runtime information to the constructor here, we could augment it with some kind of integrity constraints of the form of =Tuple heading -> Bool= that would run on all new tuples added to the relation.
 #+begin_src haskell
 data Relation heading key val =
   ( Submap key heading -- Assert the key is a subset of the heading
@@ -126,9 +213,9 @@ s :: Relation
   (AsMap '["SNAME" ::: String, "STATUS" ::: Int, "CITY" ::: String])
 s = MkRelation
 #+end_src
-Whereas in Tutorial D, the order of attributes in tuples is immaterial, in Haskell, we are unfortunately relegated to type level lists, which are ordered. To get around that, we use the =AsMap= type family here to sort attributes alphabetically and procede everywhere else under the assumption that every heading is normalized in this fashion.
+Tutorial D stresses the order of attributes in tuples is immaterial. Unfortuantely, in Haskell, type level lists /are/ ordered. To get around that, we use the =AsMap= type family to sort attributes alphabetically. Going forward, the convention for any type families that take and return =[Mapping Symbol Type]= is that their arguments are assumed to be in sorted order and they should ensure that they maintain sorting when they return.
 
-It's also a bit annoying to have to specify so much redundant information in the =Relation= type signature. We can provide a type family to alleviate this
+It's also a bit annoying to have to specify so much redundant information in the =Relation= type signature. We can approximate the Tutorial D syntax with a helper type family
 #+begin_src haskell
 type family Rel (heading :: [Mapping Symbol Type]) (key :: [Symbol]) where
   Rel heading key = Relation heading (heading :!! key) (heading :\\ key)
@@ -156,6 +243,14 @@ type family (m :: [Mapping Symbol Type]) :\\ (cs :: [Symbol]) :: [Mapping Symbol
   m :\\ '[] = m
 #+end_src
 
+Now we can write
+#+begin_src haskell
+s' :: Rel
+  (AsMap '["S#" ::: Int, "SNAME" ::: String, "STATUS" ::: Int, "CITY" ::: String])
+  '["S#"]
+s' = MkRelation
+#+end_src
+
 To store relations in memory at runtime, we'll use the standard =Map= from =containers=.
 #+begin_src haskell
 type family RelationToMap relation where
@@ -164,7 +259,7 @@ type family RelationToMap relation where
 
 We could optimize the representation a bit by using an =IntMap= for the common case of a single =Int= primary key, but in the interest of simplicity we'll forego that here.
 
-The entire contents of the databass consist of a series of named relations, for which we can reuse our existing =Tuple= infrastructure.
+Our database will consist of a series of named relations, for which we can reuse our existing =Tuple= infrastructure.
 #+begin_src haskell
 type family RelationsToDB (relations :: [Mapping Symbol Type]) where
   RelationsToDB '[] = '[]
@@ -188,7 +283,7 @@ runQuery q db = case q of
   ...
 #+end_src
 ** Identity
-The simplest possible query is to just get the entire contents of a single named relation.
+The simplest possible query is to just get the entire contents of a single named relation. It's actually quite difficult to ensure type safety for this, as we need to check that the name of the relation matches the type of the expected heading, and that indeed a relation of that name is defined at all.
 #+begin_src haskell
   RelationId ::
     ( relation ~ Relation heading key val
@@ -206,14 +301,14 @@ The simplest possible query is to just get the entire contents of a single named
      in fmap (\(k :: Tuple key, v :: Tuple val) -> k `union` v) (M.toList relation)
 #+end_src
 
- This is where the trick of putting the constraints in GADT constructors comes into play. Without =Unionable key val= in =MkRelation=, ghc would complain about not being able to find a =Unionable key val= when calling =k `union` v= and without =IsMember name (RelationToMap relation) (RelationsToDB relations)=, =lookp name db= would similarly fail.
+ This is where the trick of putting the constraints in GADT constructors comes into play. Without =Unionable key val= in =MkRelation=, ghc would complain about not being able to find a =Unionable key val= when calling =k `union` v= and without =IsMember name (RelationToMap relation) (RelationsToDB relations)=, =lookp name db= would similarly fail. Note, when trying to write something like this yourself, you're probably not going to get the constraints right immediately. I certainly didn't. My recommended workflow is to write the GADT constructor with an empty set of constraints (=() =>=) and then when ghc tells you =Couldn't deduce instance Class for Type=, fill the parentheses until it typechecks.
 ** Rename
 From Chapter 2:
 #+begin_quote
 Let =a= be a relation with an attribute =X= and no attribute =Y=. Then the expression =a RENAME ( X AS Y )=
 yields a relation that differs from a only in that the name of the specified attribute is =Y= instead of =X=.
 #+end_quote
-We'll want some type family that can compute the renaming at compile time.
+We'll want some type family that can compute the renaming at compile time. The authors don't specify that renaming to a name already in the heading is an error (at least in Chapter 2) but we're going to make it one explicitly.
 #+begin_src haskell
 type family Rename (x :: Symbol) (y :: Symbol) (relation :: [Mapping Symbol Type]) where
   Rename a b '[] = '[]
@@ -238,7 +333,7 @@ The =Query= constructor can just use the type family.
     Query t relations ->
     Query (Sort (Rename a b t)) relations
 #+end_src
-Remember that we operate assuming that every heading transformation takes a sorted heading and should return a sorted heading. Renaming is not order preserving in general so we have to sort the output after the operation [fn:: The =Sort= type family and =Sortable= class use the canonical Haskell quicksort implementation that gets shown to beginners to demonstrate how elegant the language is. Since we know we're inserting one element into an otherwise ordered list, we /should/ just do that in linear time. This is left as an exercise to the reader.]. To implement renaming, we need some function
+Remember that we operate assuming that every heading transformation takes a sorted heading and should return a sorted heading. Renaming is not order preserving in general (you could rename "a" to "z" and then what was the first attribute would go at the end) so we have to sort the output after the operation [fn:: The =Sort= type family and =Sortable= class use the canonical Haskell quicksort implementation that gets shown to beginners to demonstrate how elegant the language is. Since we know we're inserting one element into an otherwise ordered list, we /should/ just do that in linear time. The necessary type family and typeclass are left as an exercise to the reader.]. To implement renaming, we need some function
 #+begin_src haskell
 renameTuple :: Var a -> Var b -> Tuple t -> Tuple (Rename a b t)
 #+end_src
@@ -250,7 +345,7 @@ renameVar :: Var a -> Var b
 renameVar = coerce
 #+end_src
 
-Automatically proving that a =Tuple t= can be coerced into a =Tuple (Rename a b t)= is, sadly, beyond ghc's capabilities. Having convinced ourselves, though, we can write
+Consequently, since =Rename= does no reordering and doesn't change the types of any of the tuple items, we can deduce that =Tuple t= also has the same runtime representation as =Tuple (Rename a b t)=. Automatically proving that is, sadly, beyond ghc's capabilities. Having convinced ourselves, though, we can write
 #+begin_src haskell
 renameTuple _a _b = unsafeCoerce
 #+end_src
@@ -286,7 +381,7 @@ The implementation is correspondingly straightforward.
   Restrict f q' -> filter f (runQuery q' db)
 #+end_src
 ** Project
-This is like specifying which columns to select in SQL. For =select col1, col2 from table= we have =RelationId (Var @"table") someRelation & Project=. Amazingly, if we have enough type signatures specified, ghc can /infer/ which columns we wanted to project onto. We'll also get a type error if we try to project onto columns that don't exist. Note that projection /is/ order preserving, unlike renaming, so we don't have to do any special sorting.
+This is like specifying which columns to select in SQL. For =select col1, col2 from table= we have =RelationId (Var @"table") someRelation & Project=. Amazingly, if we have enough type signatures specified, ghc can /infer/ which columns we wanted to project onto. We'll also want a type error if we try to project onto columns that don't exist. Note that projection /is/ order preserving, unlike renaming, so we don't have to do any extra sorting.
 #+begin_src haskell
   Project :: (Submap t' t) => Query t relations -> Query t' relations
 #+end_src
@@ -309,7 +404,7 @@ Here is a simple example of EXTEND:
      =EXTEND S ADD ( 3 * STATUS AS TRIPLE )=
 #+end_quote
 
-=Extend= doesn't have a great SQL analogue. The closest construct is probably something like =SELECT a + 1 from table= where you put some expression after the =SELECT=. 
+=Extend= doesn't have a great SQL analogue that I know of. The closest construct is probably something like =SELECT a + 1 from table= where you put some expression after the =SELECT=.
 #+begin_src haskell
   Extend ::
     (Member l t ~ 'False, Sortable (l ::: a ': t)) =>
@@ -319,13 +414,13 @@ Here is a simple example of EXTEND:
     Query (Sort (l ::: a ': t)) relations
 #+end_src
 
-Basically, given some function that takes a label and the existing tuple type, we stick the result of calling that function on every tuple in the relation into a new attribute with the label.
+Given some function that takes a label and the existing tuple type, we stick the result of calling that function on every tuple in the relation into a new attribute with the label.
 
 #+begin_src haskell
   Extend label f q' -> map (\t -> quicksort (Ext label (f t) t)) (runQuery q' db)
 #+end_src
 ** Join
-The last type of query we'll implement here is =Join=, corresponding to the "natural join" which takes all common attributes of two relations and returns all tuples that have the same values for those attributes. =type-level-sets= doesn't have a way of computing the intersection of two mapping lists, so we'll have to write it ourselves. Let's look at what this function looks like at the value level.
+The last type of query we'll implement here is =Join=, corresponding to the "natural join" which takes all common attributes of two relations and returns all tuples that have the same values for those attributes. If we want something like SQL =SELECT x, y FROM t1 JOIN t2 ON t1.col1 = t2.col2=, we can just rename =col2= to =col1= in one of the relations before the join. =type-level-sets= doesn't provide a way of computing the intersection of two mapping lists, so we'll have to write it ourselves. Let's look at what this function looks like at the value level.
 #+begin_src haskell
 sortedIntersection :: Ord a => [a] -> [a] -> [a]
 sortedIntersection t [] = []
@@ -338,7 +433,7 @@ sortedIntersection (x:xs) (y:ys)
 -- >>> sortedIntersection [1..5] [5..10]
 -- [5]
 #+end_src
-Now we can convert this to the type level. Type families kind of resemble functions except that when we bind a type variable multiple times in a pattern, we assert that it refers to the same type in both locations, whereas binding a variable twice in a function pattern is an error. Also, type families can only "branch" at top level patterns, so we'll have to make a helper type family to store the result of comparing labels.
+Now we can convert this to the type level. Another difference between type families and functions is that when we bind a type variable multiple times in a pattern, we assert that it refers to the same type in both locations, whereas binding a variable twice in a function pattern is an error. Also, type families can only branch at top level patterns, so we'll have to make a helper type family to store the result of comparing labels.
 #+begin_src haskell
 type family Intersection (t :: [Mapping Symbol Type]) (t' :: [Mapping Symbol Type]) :: [Mapping Symbol Type] where
   Intersection t '[] = '[]
@@ -444,4 +539,4 @@ For the implementation, we'll write a "nested inner loop" join, though it doesn'
 #+end_src
 
 * Conclusion
-There are a few more relational operations described in Tutorial D that we haven't covered here, including =Summarize=, =Group=, and =Ungroup=, but what we have is good enough to cover most SQL queries that I've ever written. In the next parts of the series we'll go over actually populating the database and try to use it for a toy server.
+There are a few more relational operations described in Tutorial D that we haven't covered here, including =Summarize=, =Group=, and =Ungroup=, but what we have is good enough to cover most SQL queries that I've ever written. In the next parts of the series we'll go over populating the database and try to use it for a toy server.
