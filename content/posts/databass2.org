@@ -1,0 +1,193 @@
+#+TITLE: Databass, Part 2: Inserting into the database
+#+DATE: 2022-01-02
+#+TAGS[]: haskell
+#+DRAFT: true
+
+Welcome to Databass, Part 2, even more bass. In [[/posts/databass1][part 1]], we defined a query GADT and =runQuery= function. Here, we'll figure out how to materialize relations and tuples in memory. As before, full source is [[https://github.com/jmorag/databass/blob/a962a9b15e814a6993f0f40f1182b1644e24cfd4/src/Databass/Blog.hs][on github]]. First, though, I had a question about implementing =Group= and =Ungroup=, which we skipped in part 1. For the sake of completeness, we'll add them here.
+* Group and Ungroup
+Recall the relations from Part 1.
+#+begin_src
+╔═════════════════════════════════════════════════════════════════╗
+║     S (suppliers)                          SP (suppliers-parts) ║
+║    ┌────┬───────┬────────┬────────┐           ┌────┬────┬─────┐ ║
+║    │ S# │ SNAME │ STATUS │ CITY   │           │ S# │ P# │ QTY │ ║
+║    ├════┼───────┼────────┼────────┤           ├════┼════┼─────┤ ║
+║    │ S1 │ Smith │     20 │ London │           │ S1 │ P1 │ 300 │ ║
+║    │ S2 │ Jones │     10 │ Paris  │           │ S1 │ P2 │ 200 │ ║
+║    │ S3 │ Blake │     30 │ Paris  │           │ S1 │ P3 │ 400 │ ║
+║    │ S4 │ Clark │     20 │ London │           │ S1 │ P4 │ 200 │ ║
+║    │ S5 │ Adams │     30 │ Athens │           │ S1 │ P5 │ 100 │ ║
+║    └────┴───────┴────────┴────────┘           │ S1 │ P6 │ 100 │ ║
+║     P (parts)                                 │ S2 │ P1 │ 300 │ ║
+║    ┌────┬───────┬───────┬────────┬────────┐   │ S2 │ P2 │ 400 │ ║
+║    │ P# │ PNAME │ COLOR │ WEIGHT │ CITY   │   │ S3 │ P2 │ 200 │ ║
+║    ├════┼───────┼───────┼────────┼────────┤   │ S4 │ P2 │ 200 │ ║
+║    │ P1 │ Nut   │ Red   │   12.0 │ London │   │ S4 │ P4 │ 300 │ ║
+║    │ P2 │ Bolt  │ Green │   17.0 │ Paris  │   │ S4 │ P5 │ 400 │ ║
+║    │ P3 │ Screw │ Blue  │   17.0 │ Oslo   │   └────┴────┴─────┘ ║
+║    │ P4 │ Screw │ Red   │   14.0 │ London │                     ║
+║    │ P5 │ Cam   │ Blue  │   12.0 │ Paris  │                     ║
+║    │ P6 │ Cog   │ Red   │   19.0 │ London │                     ║
+║    └────┴───────┴───────┴────────┴────────┘                     ║
+╚═════════════════════════════════════════════════════════════════╝
+#+end_src
+=SP GROUP ( { P#, QTY } AS PQ )= looks like
+#+begin_src
+╔════════════════════════════╗
+║    ┌────┬────────────────┐ ║
+║    │ S# │ PQ             │ ║
+║    ├════┼────────────────┤ ║
+║    │    │ ┌────┬──────┐  │ ║
+║    │ S1 │ │ P# │ QTY  │  │ ║
+║    │    │ ├────┼──────┤  │ ║
+║    │    │ │ P1 │ 300  │  │ ║
+║    │    │ │ P2 │ 200  │  │ ║
+║    │    │ │ P3 │ 400  │  │ ║
+║    │    │ │ P4 │ 200  │  │ ║
+║    │    │ │ P5 │ 100  │  │ ║
+║    │    │ │ P6 │ 100  │  │ ║
+║    │    │ └────┴──────┘  │ ║
+║    │    │                │ ║
+║    │    │ ┌────┬──────┐  │ ║
+║    │ S2 │ │ P# │ QTY  │  │ ║
+║    │    │ ├────┼──────┤  │ ║
+║    │    │ │ P1 │ 300  │  │ ║
+║    │    │ │ P2 │ 400  │  │ ║
+║    │    │ └────┴──────┘  │ ║
+║    │    │ ┌────┬──────┐  │ ║
+║    │ S3 │ │ P# │ QTY  │  │ ║
+║    │    │ ├────┼──────┤  │ ║
+║    │    │ │ P2 │ 200  │  │ ║
+║    │    │ └────┴──────┘  │ ║
+║    │    │                │ ║
+║    │    │ ┌────┬──────┐  │ ║
+║    │ S4 │ │ P# │ QTY  │  │ ║
+║    │    │ ├────┼──────┤  │ ║
+║    │    │ │ P2 │ 200  │  │ ║
+║    │    │ │ P4 │ 300  │  │ ║
+║    │    │ │ P5 │ 400  │  │ ║
+║    │    │ └────┴──────┘  │ ║
+║    └────┴────────────────┘ ║
+╚════════════════════════════╝
+#+end_src
+The group operation "smooshes" (the technical term) the given attributes into a relation and then assigns that relation to a new attribute. The body of the returned relation (the outer one) has one entry for every distinct value of the attributes not named in the group operation.
+
+=SPQ UNGROUP PQ=, where =SPQ= is the above relation, performs the inverse operation, returning the original value of the =SP= relation.
+
+We've been using =[Tuple t]= as our return value for queries to mean "relation," so that's what we'll use as the attribute value.
+#+begin_src haskell
+  Group ::
+    ( Split grouped rest t
+    , Sortable (l ::: [Tuple grouped] ': rest)
+    , Ord (Tuple rest)
+    ) =>
+    Var l ->
+    Proxy grouped ->
+    Proxy rest ->
+    Query t relations ->
+    Query (Sort (l ::: [Tuple grouped] ': rest)) relations
+  Ungroup ::
+    (Split '[l ::: [Tuple grouped]] rest t, Sortable (grouped :++ rest)) =>
+    Var l ->
+    Proxy grouped ->
+    Proxy rest ->
+    Query t relations ->
+    Query (Sort (grouped :++ rest)) relations
+#+end_src
+Note that =Ord= is a little stronger than =Eq= which would be semantically sufficient. However, having =Ord= lets us implement =Group= in \(O(n\log(n))\), as opposed to \(O(n^2)\) with just =Eq=.
+#+begin_src haskell
+  Group var (_ :: Proxy grouped) (_ :: Proxy rest) q ->
+    let splits = sortBy (comparing snd) $ map (split @grouped @rest) $ runQuery q db
+        groups = groupBy ((==) `on` snd) splits
+     in map
+          ( \((grouped, rest) :| gs) ->
+              quicksort (Ext var (grouped : fmap fst gs) rest)
+          )
+          groups
+  Ungroup (_ :: Var l) (_ :: Proxy grouped) (_ :: Proxy rest) q ->
+    concatMap
+      ( \tuple ->
+          let (Ext _ grouped Empty, rest) =
+                split @'[l ::: [Tuple grouped]] @rest tuple
+           in map (\group -> quicksort (append group rest)) grouped
+      )
+      (runQuery q db)
+#+end_src
+* Populating the database
+We're going to assume that on every run of our hypothetical app, we'll want to use exactly one schema that doesn't change throughout the lifetime of the program. We're also going to start with a fresh, empty database on program start. So, no migrations or persistence that would make a database actually useful. In a later part, we can revisit writing and reading the database to and from disk, but the first assumption seems kind of reasonable. I'm not aware of any way to use =persistent= to create new SQL tables at runtime, besides running migrations at program start.
+
+To create an empty database in memory to store =relations=, we want something like
+#+begin_src haskell
+emptyDB :: Proxy relations -> Tuple (RelationsToDB relations)
+emptyDB _ = case ???
+#+end_src
+
+However, in this form, we can't scrutinize the =relations= type variable to determine if it's empty or a cons like we would a normal list. Instead, we need a typeclass.
+#+begin_src haskell
+class EmptyDB (relations :: [Mapping Symbol Type]) where
+  emptyDB :: Proxy relations -> Tuple (RelationsToDB relations)
+#+end_src
+
+The empty case is easy.
+#+begin_src haskell
+instance EmptyDB '[] where
+  emptyDB _ = Empty
+#+end_src
+
+For cons, we insert the induction into the context of the instance, before the ==>=.
+#+begin_src haskell
+instance
+  (EmptyDB relations, Ord (Tuple key)) =>
+  EmptyDB (name ::: (Relation heading key val) ': relations)
+  where
+  emptyDB (_ :: Proxy (name ::: relation ': relations)) =
+    Ext (Var @name) mempty (emptyDB (Proxy @relations))
+#+end_src
+
+To insert tuples into the database, we split the tuple into =(key, val)= and add them to the correct =Map=. We should also fail in the case that the key is already in the database. Again, when implementing something with this many constraints, it's useful to start with =() =>= and fill it in until the compiler is happy.
+#+begin_src haskell
+insert ::
+  forall relation relations name heading key val .
+  ( relations :! name ~ relation
+  , Relation heading key val ~ relation
+  , Split key val heading
+  , Ord (Tuple key)
+  , IsMember name (RelationToMap relation) (RelationsToDB relations)
+  , Updatable name (RelationToMap relation) (RelationsToDB relations) (RelationsToDB relations)
+  ) =>
+  Var name ->
+  Proxy relations ->
+  Tuple heading ->
+  Tuple (RelationsToDB relations) ->
+  Maybe (Tuple (RelationsToDB relations))
+insert var _ tuple db =
+  let old_rel = lookp var db
+      (key, val) = split @key @val tuple
+      new_rel = M.insert key val old_rel
+   in if M.member key old_rel then Nothing else Just (update db var new_rel)
+#+end_src
+
+We'll also want to be able to update database entries. Let's first write a version that updates the relation at a given key and is only allowed to modify the portion of the heading outside of the key attributes. For keys not in the relation, we'll just do nothing.
+#+begin_src haskell
+updateByKey ::
+  ( relations :! name ~ relation
+  , Relation heading key val ~ relation
+  , Ord (Tuple key)
+  , IsMember name (RelationToMap relation) (RelationsToDB relations)
+  , Updatable name (RelationToMap relation) (RelationsToDB relations) (RelationsToDB relations)
+  ) =>
+  Var name ->
+  Proxy relations ->
+  Tuple key ->
+  (Tuple val -> Tuple val) ->
+  Tuple (RelationsToDB relations) ->
+  Tuple (RelationsToDB relations)
+updateByKey var _ key fn db =
+  let old_rel = lookp var db
+      new_rel = M.adjust fn key old_rel
+   in update db var new_rel
+#+end_src
+
+We could also write an update function that takes an arbitrary =WHERE= clause that filters on all attributes in the tuple, but that would be slower, and in practice, most =UPDATE= calls I've seen in SQL are of the form =UPDATE table WHERE id=some_id=.
+
+That concludes part 2. In the next installment, we'll see how to use what we've built to serve an API.
