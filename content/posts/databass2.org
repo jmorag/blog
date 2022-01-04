@@ -1,9 +1,9 @@
 #+TITLE: Databass, Part 2: Inserting into the database
-#+DATE: 2022-01-02
+#+DATE: 2022-01-04
 #+TAGS[]: haskell
-#+DRAFT: true
+#+DRAFT: false
 
-Welcome to Databass, Part 2, even more bass. In [[/posts/databass1][part 1]], we defined a query GADT and =runQuery= function. Here, we'll figure out how to materialize relations and tuples in memory. As before, full source is [[https://github.com/jmorag/databass/blob/a962a9b15e814a6993f0f40f1182b1644e24cfd4/src/Databass/Blog.hs][on github]]. First, though, I had a question about implementing =Group= and =Ungroup=, which we skipped in part 1. For the sake of completeness, we'll add them here.
+Welcome to Databass, Part 2, even more bass. In [[/posts/databass1][part 1]], we defined a query GADT and =runQuery= function. Here, we'll figure out how to materialize relations and tuples in memory. As before, full source is [[https://github.com/jmorag/databass/blob/dcca515f40032b24bdabab3feb0c0fe72bd87002/src/Databass/Blog.hs][on github]]. First, though, I had a question about implementing =Group= and =Ungroup=, which we skipped in part 1. For the sake of completeness, we'll add them here.
 * Group and Ungroup
 Recall the relations from Part 1.
 #+begin_src
@@ -114,7 +114,7 @@ Note that =Ord= is a little stronger than =Eq= which would be semantically suffi
       (runQuery q db)
 #+end_src
 * Populating the database
-We're going to assume that on every run of our hypothetical app, we'll want to use exactly one schema that doesn't change throughout the lifetime of the program. We're also going to start with a fresh, empty database on program start. So, no migrations or persistence that would make a database actually useful. In a later part, we can revisit writing and reading the database to and from disk, but the first assumption seems kind of reasonable. I'm not aware of any way to use =persistent= to create new SQL tables at runtime, besides running migrations at program start.
+We're going to assume that on every run of our hypothetical app, we'll want to use exactly one schema that doesn't change throughout the lifetime of the program.
 
 To create an empty database in memory to store =relations=, we want something like
 #+begin_src haskell
@@ -189,5 +189,31 @@ updateByKey var _ key fn db =
 #+end_src
 
 We could also write an update function that takes an arbitrary =WHERE= clause that filters on all attributes in the tuple, but that would be slower, and in practice, most =UPDATE= calls I've seen in SQL are of the form =UPDATE table WHERE id=some_id=.
+
+* Writing to disk
+To save state between program runs, we can write the entire database to a file periodically and read it at program start. =Map= already has a =Binary= instance, so all we need to do is write one for =Tuple=.
+
+The empty case is trivial.
+
+#+begin_src haskell
+instance Binary (Tuple '[]) where
+  put Empty = pure ()
+  get = pure Empty
+#+end_src
+
+For the non-empty case, the easiest thing to do is length-prefix every attribute of the tuple when serializing.
+#+begin_src haskell
+instance (Binary x, Binary (Tuple ts)) => Binary (Tuple (l ::: x ': ts)) where
+  put (Ext _ x xs) = do
+    let bytes = runPut $ put x
+    put (BL.length bytes)
+    put x
+    put xs
+  get = do
+    size :: Int64 <- get
+    x <- isolate (fromIntegral size) get
+    Ext Var x <$> get
+#+end_src
+I'm not completely satisfied with this. It requires that we serialize twice, once to find the length and once to actually write the thing. There's also a note in the [[https://hackage.haskell.org/package/binary-0.10.0.0/docs/Data-Binary.html#t:Binary][source]] of the =Binary= instance for regular lists about not blowing the stack for large lists with a naive implementation, which would certainly happen to us. To get around this, they write =get= tail recursively and reverse at the end. I haven't tried doing that for a heterogeneous list, but it seems like it would be a nightmare to implement. I'd be happy to be wrong about that, though, if anyone is keen to try.
 
 That concludes part 2. In the next installment, we'll see how to use what we've built to serve an API.
