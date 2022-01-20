@@ -1,6 +1,6 @@
 #+TITLE: Databass, Part 1: Queries
 #+DATE: 2021-12-31
-#+TAGS[]: haskell
+#+TAGS[]: haskell, database
 #+DRAFT: false
 
 It's been a while since my [[/posts/mcc0][last language series]] on this blog, but I figured I shouldn't let an entire calendar year go by without doing some technical writing here. This time we'll be working on creating a toy relational database in the vein of [[https://www.dcs.warwick.ac.uk/~hugh/TTM/documents_and_books.html][Tutorial D]], as described in /Databases, Types, and The Relational Model: The Third Manifesto/ by C.J. Date and Hugh Darwen. However, instead of creating a full database language with a its own syntax, we're going to /embed/ the database language in Haskell. In particular, we're going to try and get ghc to ensure that queries are well typed as opposed to writing our own type checker. The source for all of this is [[https://github.com/jmorag/databass/blob/587abffe561475284528f3a7408f50e6d6718850/src/Databass/Blog.hs][on github]].

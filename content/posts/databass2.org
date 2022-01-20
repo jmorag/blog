@@ -1,6 +1,6 @@
 #+TITLE: Databass, Part 2: Inserting into the database
 #+DATE: 2022-01-04
-#+TAGS[]: haskell
+#+TAGS[]: haskell, database
 #+DRAFT: false
 
 Welcome to Databass, Part 2, even more bass. In [[/posts/databass1][part 1]], we defined a query GADT and =runQuery= function. Here, we'll figure out how to materialize relations and tuples in memory. As before, full source is [[https://github.com/jmorag/databass/blob/dcca515f40032b24bdabab3feb0c0fe72bd87002/src/Databass/Blog.hs][on github]]. First, though, I had a question about implementing =Group= and =Ungroup=, which we skipped in part 1. For the sake of completeness, we'll add them here.
