@@ -1,5 +1,5 @@
 #+TITLE: Databass, Part 3: Using the database
-#+DATE: 2022-01-19
+#+DATE: 2022-01-20
 #+TAGS[]: haskell
 #+DRAFT: false
 
