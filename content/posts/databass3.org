@@ -1,0 +1,367 @@
+#+TITLE: Databass, Part 3: Using the database
+#+DATE: 2022-01-19
+#+TAGS[]: haskell
+#+DRAFT: false
+
+In parts [[/posts/databass1][1]] and [[/posts/databass2][2]] we defined our core query types and figured out how to insert into the database. Here, we'll actually write some queries. We're going to port the professional hitmen example from William Yao's [[https://williamyaoh.com/posts/2019-12-14-typesafe-db-libraries.html][which type-safe database library should you use]] blog post to Databass and see how it stacks up. Note, I'm straying a bit from the exact implementation that we built up in the previous parts and using the more user friendly API that I hope to release to Hackage[fn:: I've had some trouble getting my Hackage account (jmorag) added to the uploader group. My emails keep getting bounced back from the hackage trustees email address. If anyone with permissions happens to be reading this and can approve my account, that would be wonderful!] once it's sufficiently polished. The core types and implementation remains the same, but moved to an =Internal= module in favor of exposing smart constructors for =Query= with fewer =Proxy= arguments as the main API.
+
+* Data model
+[[/images/hitmen-er-diagram.svg]]
+
+Handlers handle multiple hitmen and hitmen pursue multiple marks. In Haskell,
+#+begin_src haskell
+type Handler =
+  '[ "id" ::: Int
+   , "codename" ::: Text
+   , "created_at" ::: UTCTime
+   , "updated_at" ::: UTCTime
+   ]
+
+type Hitman =
+  '[ "id" ::: Int
+   , "codename" ::: Text
+   , "handler_id" ::: Int
+   , "created_at" ::: UTCTime
+   , "updated_at" ::: UTCTime
+   ]
+
+type PursuingMark =
+  '[ "hitman_id" ::: Int
+   , "mark_id" ::: Int
+   , "created_at" ::: UTCTime
+   , "updated_at" ::: UTCTime
+   ]
+
+type ErasedMark =
+  '[ "hitman_id" ::: Int
+   , "mark_id" ::: Int
+   , "awarded_bounty" ::: Int
+   , "created_at" ::: UTCTime
+   , "updated_at" ::: UTCTime
+   ]
+
+type Mark =
+  '[ "id" ::: Int
+   , "list_bounty" ::: Int
+   , "first_name" ::: Text
+   , "last_name" ::: Text
+   , "description" ::: Maybe Text
+   , "created_at" ::: UTCTime
+   , "updated_at" ::: UTCTime
+   ]
+
+type Schema =
+  Sort
+    '[ "handlers" ::: T (Sort Handler) '["id"]
+     , "hitmen" ::: T (Sort Hitman) '["id"]
+     , "pursuing_marks" ::: T (Sort PursuingMark) '["hitman_id", "mark_id"]
+     , "erased_marks" ::: T (Sort ErasedMark) '["hitman_id", "mark_id"]
+     , "marks" ::: T (Sort Mark) '["id"]
+     ]
+#+end_src
+If we want, we can factor our the common =created_at= and =updated_at= columns.
+#+begin_src haskell
+type TimeStamps = '["created_at" ::: UTCTime, "updated_at" ::: UTCTime]
+
+type Handler = '["id" ::: Int, "codename" ::: Text] :++ TimeStamps
+#+end_src
+* Populating the database
+The original blog uses the following seed data in sql.
+#+begin_src sql
+INSERT INTO handlers ( id, codename )
+VALUES
+  ( 1, 'Olive' ),
+  ( 2, 'Pallas' );
+
+INSERT INTO hitmen ( id, codename, handler_id )
+VALUES
+  ( 1, 'Callaird', 1 ),
+  ( 2, 'Bomois', 1),
+  ( 3, 'Dune', 2);
+
+INSERT INTO marks ( id, first_name, last_name, list_bounty )
+VALUES
+  ( 1, 'John', 'Tosti', 25000 ),
+  ( 2, 'Macie', 'Jordan', 50000 ),
+  ( 3, 'Sal', 'Aspot', 33000 ),
+  ( 4, 'Lars', 'Andersen', 10000 );
+
+INSERT INTO pursuing_marks ( hitman_id, mark_id, created_at )
+VALUES
+  ( 1, 2, '2018-07-01' ),
+  ( 2, 2, '2018-07-02' ),
+  ( 2, 4, '2019-05-05' ),
+  ( 3, 3, '2018-05-13' ),
+  ( 3, 2, '2019-02-15' );
+
+INSERT INTO erased_marks ( hitman_id, mark_id, awarded_bounty, created_at )
+VALUES
+  ( 1, 2, 30000, '2018-09-03' ),
+  ( 1, 1, 55000, '2019-02-02' ),
+  ( 3, 3, 27000, '2018-06-30' );
+#+end_src
+Being able to specify which columns to insert and defaulting the remaining ones seems nice, so I've replicated that API for Databass, but with explicit defaults for unspecified columns. Note that this version of insert, unlike the one in part 2, doesn't return =Nothing= for duplicate keys and just silently overwrites them. This is more convenient when hard coding data but can be a problem when called with user input.
+#+begin_src haskell
+insertManyWithDefault ::
+  forall name cols relations heading k v t.
+  ( IsHeading heading k v
+  , (RelationsToDB relations :! name) ~ relation
+  , Relation heading k v ~ relation
+  , IsMember name (RelationToMap relation) (RelationsToDB relations)
+  , Updatable name (RelationToMap relation) (RelationsToDB relations) (RelationsToDB relations)
+  , Ord (Tuple k)
+  , Unionable (heading :!! cols) (heading :\\ cols)
+  , Union (heading :!! cols) (heading :\\ cols) ~ heading
+  , Foldable t
+  ) =>
+  Tuple (heading :\\ cols) ->
+  t (Tuple (heading :!! cols)) ->
+  Tuple (RelationsToDB relations) ->
+  Tuple (RelationsToDB relations)
+#+end_src
+Heinous type signature notwithstanding, this function makes populating the database almost as pleasant as in sql.
+#+begin_src haskell
+makeDB :: IO (RelationsToDB Schema)
+makeDB = do
+  now <- getCurrentTime
+  let defaultTimeStamps :: Tuple TimeStamps
+      defaultTimeStamps = now <| now <| Empty
+  pure $
+    initDB @Schema
+      & insertManyWithDefault @"handlers" @'["id", "codename"] @Schema
+        defaultTimeStamps
+        [ 1 <| "Olive" <| Empty
+        , 2 <| "Pallas" <| Empty
+        ]
+      & insertManyWithDefault @"hitmen" @'["id", "codename", "handler_id"] @Schema
+        defaultTimeStamps
+        [ 1 <| "Callaird" <| 1 <| Empty
+        , 2 <| "Bomois" <| 1 <| Empty
+        , 3 <| "Dune" <| 2 <| Empty
+        ]
+      & insertManyWithDefault
+        @"marks"
+        @'["id", "list_bounty", "first_name", "last_name"]
+        @Schema
+        (t @'["description", "created_at", "updated_at"] (Nothing <| now <| now <| Empty))
+        [ 1 <| 25000 <| "John" <| "Tosti" <| Empty
+        , 2 <| 50000 <| "Macie" <| "Jordan" <| Empty
+        , 3 <| 33000 <| "Sal" <| "Aspot" <| Empty
+        , 4 <| 10000 <| "Lars" <| "Andersen" <| Empty
+        ]
+      & insertMany @"pursuing_marks" @Schema
+        ( map
+            (asMap @PursuingMark)
+            [ 1 <| 2 <| read "2018-07-01 00:00:00 UTC" <| now <| Empty
+            , 2 <| 2 <| read "2018-07-02 00:00:00 UTC" <| now <| Empty
+            , 2 <| 4 <| read "2019-05-05 00:00:00 UTC" <| now <| Empty
+            , 3 <| 3 <| read "2018-05-13 00:00:00 UTC" <| now <| Empty
+            , 3 <| 2 <| read "2019-02-15 00:00:00 UTC" <| now <| Empty
+            ]
+        )
+      & insertMany @"erased_marks" @Schema
+        ( map
+            (asMap @ErasedMark)
+            [ 1 <| 2 <| 30000 <| read "2018-09-03 00:00:00 UTC" <| now <| Empty
+            , 1 <| 1 <| 55000 <| read "2019-02-02 00:00:00 UTC" <| now <| Empty
+            , 3 <| 3 <| 27000 <| read "2018-06-30 00:00:00 UTC" <| now <| Empty
+            ]
+        )
+#+end_src
+When writing and debugging queries, I /strongly/ recommend putting the model types and inserting code into their own module, as they tend not to change once written and then ghc doesn't have to re-compile them when you change a query, which can take forever.
+* Queries
+** Get all the hitmen
+Easy!
+#+begin_src haskell
+getAllHitmen :: Query (Sort Hitmen) Schema
+getAllHitmen = table @"hitmen" -- 'table' is the smart constructor for 'RelationId'
+
+-- Results
+-- {codename :-> "Callaird", created_at :-> 2022-01-20 15:41:46.2046 UTC, handler_id :-> 1, id :-> 1, updated_at :-> 2022-01-20 15:41:46.2046 UTC}
+-- {codename :-> "Bomois", created_at :-> 2022-01-20 15:41:46.2046 UTC, handler_id :-> 1, id :-> 2, updated_at :-> 2022-01-20 15:41:46.2046 UTC}
+-- {codename :-> "Dune", created_at :-> 2022-01-20 15:41:46.2046 UTC, handler_id :-> 2, id :-> 3, updated_at :-> 2022-01-20 15:41:46.2046 UTC}
+#+end_src
+** Get all the hitmen that are pursuing active marks (i.e. marks that haven’t been erased yet)
+This is the set difference of the pursuing marks relation and the erased marks relation. We have to project only the hitman and mark ids to remove the timestamps and awards which are immaterial to this query. Note that we didn't implement set difference in previous parts but it behaves exactly the same as the =\\= operator from =Data.List=.
+#+begin_src haskell
+getAllHitmenActiveMarks =
+   (table @"pursuing_marks" & project @'["hitman_id", "mark_id"])
+      \\ (table @"erased_marks" & project @'["hitman_id", "mark_id"])
+#+end_src
+If we don't want just the hitman and mark ids in the final result, we can join with the hitman relation to get the full hitman tuple.
+#+begin_src haskell
+getAllHitmenActiveMarks =
+  ( (table @"pursuing_marks" & project @'["hitman_id", "mark_id"])
+      \\ (table @"erased_marks" & project @'["hitman_id", "mark_id"])
+  )
+    & project @'["hitman_id"]
+    & rename @"hitman_id" @"id"
+    & join (table @"hitmen")
+
+-- Results
+-- {codename :-> "Bomois", created_at :-> 2022-01-20 15:41:46.2046 UTC, handler_id :-> 1, id :-> 2, updated_at :-> 2022-01-20 15:41:46.2046 UTC}
+-- {codename :-> "Dune", created_at :-> 2022-01-20 15:41:46.2046 UTC, handler_id :-> 2, id :-> 3, updated_at :-> 2022-01-20 15:41:46.2046 UTC}
+
+#+end_src
+** Get all the marks that have been erased since a given date
+This query will take a =UTCTime= as an argument.
+#+begin_src haskell
+erasedSince :: UTCTime -> Query _ Schema
+erasedSince time =
+  table @"erased_marks"
+    & restrict (\mark -> mark ^. #created_at >= time)
+#+end_src
+Note that Databass includes machinery to use =OverloadedLabels= to create lenses for tuples. For a superlative coverage of lenses, see Chris Penner's [[https://leanpub.com/optics-by-example][Optics By Example]]. If, for some reason, adding the complexity of lenses and label syntax to the complexity of the type level shenanigans we've been doing here doesn't appeal to you, the following is equivalent.
+#+begin_src haskell
+erasedSince time =
+  table @"erased_marks"
+    & restrict (\mark -> lookp (Var @"created_at") mark >= time)
+#+end_src
+** Get the total bounty awarded to each hitman
+This requires the =summarize= relational operator from Tutorial D that we haven't implemented yet. For relations =a= and =b=, where =b= has a heading that is a projection of =a=, =SUMMARIZE a PER (b) ADD (summary AS Z)= groups all the tuples in =a= that have the same values for the attributes in =b=, runs some aggregation operator =summary= over them, and adds them to an attribute called =Z=. =Z= must not appear already in =b=. Tutorial D defines a large set of aggregation operators like =COUNT=, =AVG=, and =SUM=. Instead of manually reproducing all of those, we capture the essense of aggregation using =Fold= from the [[https://hackage.haskell.org/package/foldl-1.4.12][=foldl= library]].
+#+begin_src haskell
+  Summarize ::
+    forall name a t t' relations.
+    ( Submap t' t
+    , Member name t' ~ 'False
+    , Eq (Tuple t')
+    , Sortable (name ::: a ': t')
+    ) =>
+    Var name ->
+    Query t' relations ->
+    Fold (Tuple t) a ->
+    Query t relations ->
+    Query (Sort (name ::: a ': t')) relations
+------------------------------------------------
+-- implementation in 'runQuery'
+------------------------------------------------
+  Summarize var projection folder q ->
+    let proj = Data.List.nub $ runQuery projection mem
+        tuples = runQuery q mem
+     in go proj tuples
+    where
+      go [] _ = []
+      go (p : ps) tuples =
+        let (these, rest) = Data.List.partition (\tuple -> p == submap tuple) tuples
+         in quicksort (Ext var (Control.Foldl.fold folder these) p) : go ps rest
+#+end_src
+Now, to get the total bounty awarded to each hitman, we summarize the erased marks relation over hitman ids, summing over awarded bounties.
+#+begin_src haskell
+totalBounties :: Query _ Schema
+totalBounties =
+  table @"erased_marks"
+    & summarize @"total_bounty"
+      (project @'["id"] (table @"hitmen") & rename @"id" @"hitman_id")
+      (Control.Foldl.premap (view #awarded_bounty) Control.Foldl.sum)
+
+-- Results
+-- {hitman_id :-> 1, total_bounty :-> 85000}
+-- {hitman_id :-> 2, total_bounty :-> 0}
+-- {hitman_id :-> 3, total_bounty :-> 27000}
+#+end_src
+Tutorial D has a shorthand for when the =b= relation is an actual projection of =a= which allows users to just supply attributes instead of writing out the full projection on the same initial relation. Databass supports that via the =summarize'= smart constructor. Note, however, that if we use that for this query,
+#+begin_src haskell
+totalBounties' =
+  table @"erased_marks"
+    & summarize' @"total_bounty" @'["hitman_id"]
+      (Control.Foldl.premap (view #awarded_bounty) Control.Foldl.sum)
+#+end_src
+we get
+#+begin_src
+{hitman_id :-> 1, total_bounty :-> 85000}
+{hitman_id :-> 3, total_bounty :-> 27000}
+#+end_src
+because hitman 2 doesn't appear in the erased marks table whereas it does in the hitmen table.
+** Get each hitman’s latest kill
+Fortunately we get to use =summarize= again.
+#+begin_src haskell
+latestHits :: Query _ Schema
+latestHits =
+  table @"erased_marks"
+    & summarize @"latest_kill"
+      (table @"hitmen" & project @'["id"] & rename @"id" @"hitman_id")
+      (L.premap (view #created_at) L.maximum)
+
+-- Results
+-- {hitman_id :-> 1, latest_kill :-> Just 2019-02-02 00:00:00 UTC}
+-- {hitman_id :-> 2, latest_kill :-> Nothing}
+-- {hitman_id :-> 3, latest_kill :-> Just 2018-06-30 00:00:00 UTC}
+#+end_src
+Again, with the short summarize form, we'd get the same result without hitman 2.
+#+begin_src
+{hitman_id :-> 1, latest_kill :-> Just 2019-02-02 00:00:00 UTC}
+{hitman_id :-> 3, latest_kill :-> Just 2018-06-30 00:00:00 UTC}
+#+end_src
+This is slightly different from the versions of the query presented in the original post which use a sql =LEFT OUTER JOIN= to also get the mark associated with each of these kills. We can retrieve the associated marks with
+#+begin_src haskell
+latestKills =
+  table @"erased_marks"
+    & summarize @"latest_kill"
+      (table @"hitmen" & project @'["id"] & rename @"id" @"hitman_id")
+      (L.premap (view #created_at) L.maximum)
+    & join (table @"erased_marks")
+    & restrict (\mark -> (mark ^. #latest_kill) == Just (mark ^. #created_at))
+
+-- Results
+-- {awarded_bounty :-> 55000, created_at :-> 2019-02-02 00:00:00 UTC, hitman_id :-> 1, latest_kill :-> Just 2019-02-02 00:00:00 UTC, mark_id :-> 1, updated_at :-> 2022-01-20 15:41:46.2046 UTC}
+-- {awarded_bounty :-> 27000, created_at :-> 2018-06-30 00:00:00 UTC, hitman_id :-> 3, latest_kill :-> Just 2018-06-30 00:00:00 UTC, mark_id :-> 3, updated_at :-> 2022-01-20 15:41:46.2046 UTC}
+#+end_src
+but this will throw out the results for hitman 2 who has no latest kills whereas the sql version will return nulls for all of the columns not present in the erased marks table. Semantically, these have the same interpretation -- hitman 2 has no latest kill -- but the difference in cardinality is noteworthy.
+** Get all the active marks that have only a single pursuer
+To get all active marks with only one pursuer, we group the pursuing marks over their hitman id and restrict the resulting tuples to ones with a single pursuer. It's helpful to see the intermediate steps here. First, we get rid of the time stamps and perform the initial grouping operation.
+#+begin_src haskell
+table @"pursuing_marks"
+  & project @'["hitman_id", "mark_id"]
+  & group @"pursuers" @'["hitman_id"]
+
+-- Results
+-- {mark_id :-> 2, pursuers :-> [{hitman_id :-> 1},{hitman_id :-> 2},{hitman_id :-> 3}]}
+-- {mark_id :-> 3, pursuers :-> [{hitman_id :-> 3}]}
+-- {mark_id :-> 4, pursuers :-> [{hitman_id :-> 2}]}
+#+end_src
+
+From there, the rest of the filtering and projecting is straightforward.
+#+begin_src haskell
+singlePursuer =
+  table @"pursuing_marks"
+    & project @'["hitman_id", "mark_id"]
+    & group @"pursuers" @'["hitman_id"]
+    & restrict (\mark -> length (mark ^. #pursuers) == 1)
+    & project @'["mark_id"]
+
+-- Results
+-- {mark_id :-> 3}
+-- {mark_id :-> 4}
+#+end_src
+** Get all the “marks of opportunity” (i.e. marks that a hitman erased without them marking the mark as being pursued first)
+To get this information, we join the pursuing marks and the erased marks on their mark ids and keep only the ones with different hitman ids. Again, the time stamps are irrelevant here and get in the way of our joins. Projecting them away has gotten a bit annoying, but fortunately we can create a function to do it for us.
+#+begin_src haskell
+removeTimeStamps ::
+  forall t t'.
+  ( Submap TimeStamps t
+  , Submap t' t
+  , t :\\ GetLabels TimeStamps ~ t'
+  , t :!! GetLabels t' ~ t'
+  ) =>
+  Query t Schema ->
+  Query t' Schema
+removeTimeStamps q = project @(GetLabels t') q
+#+end_src
+Refactoring the previous queries to use this is left as an exercise for the reader. Now, the full query.
+#+begin_src haskell
+opportunity =
+  (table @"erased_marks" & rename @"hitman_id" @"erased_hitman_id" & removeTimeStamps)
+      & join (table @"pursuing_marks" & rename @"hitman_id" @"pursuing_hitman_id" & removeTimeStamps)
+      & restrict (\m -> m ^. #erased_hitman_id /= m ^. #pursuing_hitman_id)
+
+-- Results
+-- {awarded_bounty :-> 30000, erased_hitman_id :-> 1, mark_id :-> 2, pursuing_hitman_id :-> 2}
+-- {awarded_bounty :-> 30000, erased_hitman_id :-> 1, mark_id :-> 2, pursuing_hitman_id :-> 3}
+#+end_src
+In both cases, hitman 1 killed mark 2 whereas both hitmen 2 and 3 were pursuing mark 2. These both refer to the same mark of opportunity, which becomes clear when we project away the pursuing hitman id.
+* Conclusion
+That concludes our port of "Fiver, but for paid killers." I don't have concrete plans for future installments in this series, but some potential ideas are
+- optimizing common query cases and storage
+- using Databass as backing storage for a servant api
+- adding a real persistence layer and storing data transparently on disk instead of in memory
+Do let me know which of these you'd like to see most or if you have any other ideas. Thanks for reading!
