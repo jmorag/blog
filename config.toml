@@ -16,7 +16,7 @@ theme = "hugo-primer"
   # Mainroad - no youtube/gh or next/prev, Lauren doesn't like it
 
 googleAnalytics = ""
-copyright = "&copy;Joseph Morag 2020"
+copyright = "&copy;Joseph Morag 2020-2022"
 
 [taxonomies]
   tag = "tags"
